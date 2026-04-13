@@ -1,0 +1,78 @@
+agent:
+  name: "RAG Agent"
+  role: "Knowledge Assistant"
+  primary_model: "gpt-4o"
+  utility_model: "gpt-4o-mini"
+  temperature: 0.3
+  max_tokens: 2000
+  # db_tables_schema: |
+  #   - leads (id, name, email, status, value, assigned_to, created_at)
+  #   - quotations (id, lead_id, amount, status, valid_until)
+
+ingestion:
+  chunking:
+    strategy: "auto"        # auto | hybrid | code | semantic | simple
+    max_tokens: 512
+    chunk_size: 1000
+    chunk_overlap: 200
+    min_chunk_size: 100
+    merge_peers: true
+
+  enrichment:
+    enabled: true           # Contextual Enrichment (Anthropic method)
+    model: "gpt-4o-mini"
+    max_concurrent: 5
+    max_document_chars: 4000
+
+  embedding:
+    model: "text-embedding-3-small"
+    dimensions: 1536
+    batch_size: 100
+    max_retries: 3
+    use_cache: true
+
+  formats:
+    documents: true         # PDF, DOCX, PPTX, XLSX, HTML
+    text: true              # TXT, MD
+    code: true              # PY, TS, JS, Java, Go, etc.
+    structured: true        # CSV, JSON, XML, YAML
+    audio: false            # MP3, WAV, M4A, FLAC (requires Whisper)
+    images: false           # PNG, JPG (requires Vision LLM)
+    subtitles: true         # SRT, VTT
+
+retrieval:
+  intent_router:
+    enabled: true
+    model: "gpt-4o-mini"
+
+  query_expansion:
+    enabled: true
+    model: "gpt-4o-mini"
+
+  multi_query:
+    enabled: true
+    num_variations: 3
+    parallel: true
+
+  reranking:
+    enabled: true
+    model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    candidates: 20
+    top_k: 5
+
+  self_reflection:
+    enabled: true
+    model: "gpt-4o-mini"
+    threshold: 3            # Minimum acceptable score (1-5)
+    max_retries: 1
+
+  hybrid_search:
+    enabled: true
+    text_weight: 0.3        # 70% vector, 30% BM25
+
+storage:
+  provider: "supabase"      # supabase | postgres
+  connection_string: "${DATABASE_URL}"
+  pool_min: 2
+  pool_max: 10
+  similarity_threshold: 0.7

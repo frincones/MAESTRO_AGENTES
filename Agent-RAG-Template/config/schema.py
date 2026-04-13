@@ -1,0 +1,152 @@
+"""Configuration schema with Pydantic validation and YAML loading."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+class AgentSettings(BaseModel):
+    name: str = "RAG Agent"
+    role: str = "Knowledge Assistant"
+    primary_model: str = "gpt-4o"
+    utility_model: str = "gpt-4o-mini"
+    temperature: float = 0.3
+    max_tokens: int = 2000
+    db_tables_schema: Optional[str] = None
+
+
+class ChunkingSettings(BaseModel):
+    strategy: str = "auto"  # auto | hybrid | code | semantic | simple
+    max_tokens: int = 512
+    chunk_size: int = 1000
+    chunk_overlap: int = 200
+    min_chunk_size: int = 100
+    merge_peers: bool = True
+
+
+class EnrichmentSettings(BaseModel):
+    enabled: bool = True
+    model: str = "gpt-4o-mini"
+    max_concurrent: int = 5
+    max_document_chars: int = 4000
+
+
+class EmbeddingSettings(BaseModel):
+    model: str = "text-embedding-3-small"
+    dimensions: int = 1536
+    batch_size: int = 100
+    max_retries: int = 3
+    use_cache: bool = True
+
+
+class FormatSettings(BaseModel):
+    documents: bool = True   # PDF, DOCX, PPTX, XLSX, HTML
+    text: bool = True        # TXT, MD
+    code: bool = True        # PY, TS, JS, etc.
+    structured: bool = True  # CSV, JSON, XML, YAML
+    audio: bool = False      # MP3, WAV (requires Whisper)
+    images: bool = False     # PNG, JPG (requires Vision LLM)
+    subtitles: bool = True   # SRT, VTT
+
+
+class IngestionSettings(BaseModel):
+    chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
+    enrichment: EnrichmentSettings = Field(default_factory=EnrichmentSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    formats: FormatSettings = Field(default_factory=FormatSettings)
+
+
+class IntentRouterSettings(BaseModel):
+    enabled: bool = True
+    model: str = "gpt-4o-mini"
+
+
+class QueryExpansionSettings(BaseModel):
+    enabled: bool = True
+    model: str = "gpt-4o-mini"
+
+
+class MultiQuerySettings(BaseModel):
+    enabled: bool = True
+    num_variations: int = 3
+    parallel: bool = True
+
+
+class RerankingSettings(BaseModel):
+    enabled: bool = True
+    model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    candidates: int = 20
+    top_k: int = 5
+
+
+class SelfReflectionSettings(BaseModel):
+    enabled: bool = True
+    model: str = "gpt-4o-mini"
+    threshold: int = 3
+    max_retries: int = 1
+
+
+class HybridSearchSettings(BaseModel):
+    enabled: bool = True
+    text_weight: float = 0.3
+
+
+class RetrievalSettings(BaseModel):
+    intent_router: IntentRouterSettings = Field(default_factory=IntentRouterSettings)
+    query_expansion: QueryExpansionSettings = Field(default_factory=QueryExpansionSettings)
+    multi_query: MultiQuerySettings = Field(default_factory=MultiQuerySettings)
+    reranking: RerankingSettings = Field(default_factory=RerankingSettings)
+    self_reflection: SelfReflectionSettings = Field(default_factory=SelfReflectionSettings)
+    hybrid_search: HybridSearchSettings = Field(default_factory=HybridSearchSettings)
+
+
+class StorageSettings(BaseModel):
+    provider: str = "supabase"  # supabase | postgres
+    connection_string: str = ""
+    pool_min: int = 2
+    pool_max: int = 10
+    similarity_threshold: float = 0.7
+
+
+class AppConfig(BaseModel):
+    """Root configuration for the Agent RAG Template."""
+
+    agent: AgentSettings = Field(default_factory=AgentSettings)
+    ingestion: IngestionSettings = Field(default_factory=IngestionSettings)
+    retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    storage: StorageSettings = Field(default_factory=StorageSettings)
+
+
+def _resolve_env_vars(data: Any) -> Any:
+    """Recursively resolve ${ENV_VAR} references in config values."""
+    if isinstance(data, str) and data.startswith("${") and data.endswith("}"):
+        env_var = data[2:-1]
+        return os.getenv(env_var, data)
+    elif isinstance(data, dict):
+        return {k: _resolve_env_vars(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_resolve_env_vars(item) for item in data]
+    return data
+
+
+def load_config(config_path: Optional[str] = None) -> AppConfig:
+    """Load configuration from YAML file with env var resolution."""
+    if config_path is None:
+        config_path = os.getenv(
+            "RAG_CONFIG_PATH",
+            str(Path(__file__).parent / "default.yaml"),
+        )
+
+    path = Path(config_path)
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        resolved = _resolve_env_vars(raw)
+        return AppConfig(**resolved)
+
+    return AppConfig()

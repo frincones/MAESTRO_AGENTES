@@ -1,0 +1,117 @@
+agent:
+  name: "ColombiaCódigo"
+  role: "Asistente Legal Colombiano - Análisis Documental Jurídico"
+  primary_model: "gpt-4o-mini"   # Optimized for speed + cost.
+                                 # For legal use cases, temperature matters more than
+                                 # model size. Switch to gpt-4o only if you need deeper
+                                 # reasoning on complex multi-document analyses.
+  utility_model: "gpt-4o-mini"
+  temperature: 0.1               # ⚖️ Legal precision: deterministic, low creativity.
+                                 # 0.1 = consistent citations, minimal hallucination risk.
+                                 # Industry standard for legal/medical AI.
+  max_tokens: 1800               # Tuned: 5-section legal responses fit in ~1400-1600 tokens.
+                                 # 3000 was padding. Lower = faster LLM response (~300-500ms saved).
+  # db_tables_schema: |
+  #   - leads (id, name, email, status, value, assigned_to, created_at)
+  #   - quotations (id, lead_id, amount, status, valid_until)
+
+ingestion:
+  chunking:
+    strategy: "auto"        # auto | hybrid | code | semantic | simple
+    max_tokens: 512
+    chunk_size: 1000
+    chunk_overlap: 200
+    min_chunk_size: 100
+    merge_peers: true
+
+  enrichment:
+    enabled: false          # Contextual Enrichment (Anthropic). 1 LLM call/chunk = slow.
+                            # Set to true for production (35-49% better recall, ~$0.001/chunk).
+    model: "gpt-4o-mini"
+    max_concurrent: 10      # Higher concurrency to speed up when enabled
+    max_document_chars: 4000
+
+  embedding:
+    model: "text-embedding-3-small"
+    dimensions: 1536
+    batch_size: 100
+    max_retries: 3
+    use_cache: true
+
+  formats:
+    documents: true         # PDF, DOCX, PPTX, XLSX, HTML
+    text: true              # TXT, MD
+    code: true              # PY, TS, JS, Java, Go, etc.
+    structured: true        # CSV, JSON, XML, YAML
+    audio: false            # MP3, WAV, M4A, FLAC (requires Whisper)
+    images: false           # PNG, JPG (requires Vision LLM)
+    subtitles: true         # SRT, VTT
+
+retrieval:
+  # ─────────────────────────────────────────────────────────────────────
+  # OPTIMAL CONFIG — based on production patterns from ottomator-agents
+  # repo (agentic-rag-kg, ag-ui-rag, light-rag).
+  #
+  # Pipeline: query → embed → hybrid_search (1 SQL) → rerank → LLM
+  # Total: ~5-6s. 1 LLM call per query (the main response).
+  #
+  # Strategies disabled by default because they multiply LLM calls and
+  # SQL round-trips without proportional quality gain. Re-enable per
+  # use case if needed.
+  # ─────────────────────────────────────────────────────────────────────
+
+  intent_router:
+    enabled: false          # Useful only if you have SQL tables alongside RAG.
+                            # Adds 1 LLM call (~0.5s). Enable when db_tables_schema is set.
+    model: "gpt-4o-mini"
+
+  query_expansion:
+    enabled: false          # Redundant with multi_query and adds 1 LLM call.
+                            # Hybrid search + re-ranker gives similar recall.
+    model: "gpt-4o-mini"
+
+  multi_query:
+    enabled: false          # Adds 1 LLM call + N parallel SQL queries (~3-4s).
+                            # Re-ranker on top-20 candidates is more efficient.
+    num_variations: 3
+    parallel: true
+
+  hybrid_search:
+    enabled: true           # ★ STANDARD — single SQL combining vector + BM25.
+                            # No extra latency vs pure vector search.
+    text_weight: 0.45       # ⚖️ Legal-tuned: higher BM25 weight for literal terms
+                            # like "Artículo 1973", "Código Civil", "Ley 1564".
+                            # Default for general use: 0.3.
+
+  reranking:
+    enabled: true           # ★ BEST ROI — local cross-encoder, ~0.2s, +30% precision.
+    model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    candidates: 25          # ⚖️ Legal-tuned: balanced candidate pool.
+                            # 25 gives enough nuance without doubling CPU rerank time
+                            # (40 → 25 saves ~120-150ms on cross-encoder).
+    top_k: 10               # ⚖️ More chunks for the LLM context. Legal analysis
+                            # needs surrounding articles, not just the matching one.
+
+  self_reflection:
+    enabled: false          # Mata UX (dobla latencia: +5-10s) y rara vez ayuda
+                            # cuando hybrid+rerank ya están activos.
+                            # Solo usar para batch async de alta importancia.
+    model: "gpt-4o-mini"
+    threshold: 2
+    max_retries: 1
+
+  conversation_memory:
+    enabled: false          # Las conversaciones pasadas como RAG context confunden al LLM.
+                            # El chat history actual ya cubre el contexto necesario.
+                            # Re-activar si necesitas que el agente recuerde sesiones distintas.
+    save_to_rag: false      # Si false: NO guarda exchanges como vectores en DB
+                            # (ahorra 2 LLM calls + 1 SQL query bloqueantes después de cada respuesta).
+
+storage:
+  provider: "supabase"      # supabase | postgres
+  connection_string: "${DATABASE_URL}"
+  pool_min: 4
+  pool_max: 20              # Tuned: room for concurrent users without pool-wait stalls.
+  similarity_threshold: 0.10  # ⚖️ Legal-tuned: very permissive recall.
+                              # The cross-encoder re-ranker handles precision.
+                              # Default for general use: 0.15.
