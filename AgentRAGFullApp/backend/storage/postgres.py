@@ -638,3 +638,125 @@ class PostgresStorage(BaseStorage):
         if deleted:
             logger.info("Deleted session %s", session_id)
         return deleted
+
+    # -- Legal: Normas search --
+
+    async def search_normas(
+        self,
+        query_embedding: List[float],
+        query_text: str = "",
+        tipo: Optional[str] = None,
+        estado: Optional[str] = None,
+        sector: Optional[str] = None,
+        limit: int = 10,
+        text_weight: float = 0.4,
+        similarity_threshold: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search normas table using hybrid vector + text search."""
+        threshold = similarity_threshold if similarity_threshold is not None else self.similarity_threshold
+        embedding_str = _embedding_to_pg(query_embedding)
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM search_normas($1::vector, $2, $3, $4, $5, $6, $7, $8)",
+                embedding_str, query_text, tipo, estado, sector,
+                limit, text_weight, threshold,
+            )
+
+        return [
+            {
+                "norma_id": str(r["norma_id"]),
+                "tipo": r["tipo"],
+                "numero": r["numero"],
+                "anio": r["anio"],
+                "titulo": r["titulo"],
+                "estado": r["estado"],
+                "fecha_expedicion": str(r["fecha_expedicion"]) if r["fecha_expedicion"] else None,
+                "fuente_url": r["fuente_url"],
+                "sector": r["sector"],
+                "resumen": r["resumen"],
+                "content_preview": r["content_preview"],
+                "combined_score": float(r["combined_score"]),
+                "vector_similarity": float(r["vector_similarity"]),
+                "text_similarity": float(r["text_similarity"]),
+            }
+            for r in rows
+        ]
+
+    # -- Legal: Jurisprudencia search --
+
+    async def search_jurisprudencia(
+        self,
+        query_embedding: List[float],
+        query_text: str = "",
+        corte: Optional[str] = None,
+        tipo: Optional[str] = None,
+        solo_precedentes: bool = False,
+        limit: int = 10,
+        text_weight: float = 0.4,
+        similarity_threshold: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search jurisprudencia table using hybrid vector + text search."""
+        threshold = similarity_threshold if similarity_threshold is not None else self.similarity_threshold
+        embedding_str = _embedding_to_pg(query_embedding)
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM search_jurisprudencia($1::vector, $2, $3, $4, $5, $6, $7, $8)",
+                embedding_str, query_text, corte, tipo, solo_precedentes,
+                limit, text_weight, threshold,
+            )
+
+        return [
+            {
+                "sentencia_id": str(r["sentencia_id"]),
+                "corte": r["corte"],
+                "tipo_sentencia": r["tipo_sentencia"],
+                "numero": r["numero"],
+                "fecha": str(r["fecha"]) if r["fecha"] else None,
+                "magistrado": r["magistrado"],
+                "es_precedente": r["es_precedente"],
+                "decision": r["decision"],
+                "ratio_decidendi": r["ratio_decidendi"],
+                "fuente_url": r["fuente_url"],
+                "combined_score": float(r["combined_score"]),
+                "vector_similarity": float(r["vector_similarity"]),
+                "text_similarity": float(r["text_similarity"]),
+            }
+            for r in rows
+        ]
+
+    # -- Legal: Combined search (chunks + normas + jurisprudencia) --
+
+    async def search_legal_all(
+        self,
+        query_embedding: List[float],
+        query_text: str = "",
+        chunk_limit: int = 10,
+        norma_limit: int = 5,
+        juris_limit: int = 5,
+        similarity_threshold: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Unified search across RAG chunks, normas, and jurisprudencia."""
+        threshold = similarity_threshold if similarity_threshold is not None else self.similarity_threshold
+        embedding_str = _embedding_to_pg(query_embedding)
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM search_legal_all($1::vector, $2, $3, $4, $5, $6)",
+                embedding_str, query_text, chunk_limit, norma_limit,
+                juris_limit, threshold,
+            )
+
+        return [
+            {
+                "result_id": str(r["result_id"]),
+                "content": r["content"],
+                "source_type": r["source_type"],
+                "source_name": r["source_name"],
+                "similarity": float(r["similarity"]),
+                "estado": r["estado"],
+                "metadata": json.loads(r["metadata"]) if r["metadata"] else {},
+            }
+            for r in rows
+        ]

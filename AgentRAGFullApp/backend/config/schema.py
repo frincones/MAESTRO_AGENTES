@@ -122,6 +122,29 @@ class StorageSettings(BaseModel):
     similarity_threshold: float = 0.7
 
 
+class LegalSourcesSettings(BaseModel):
+    """Configuration for live legal source connections."""
+    enabled: bool = True
+    datos_gov_co: bool = True
+    senado: bool = True
+    funcion_publica: bool = True
+    corte_constitucional: bool = True
+    corte_suprema: bool = False       # Needs Playwright (heavy)
+    diario_oficial: bool = False       # Needs Playwright (heavy)
+    max_concurrent_sources: int = 3
+    search_timeout_seconds: int = 15
+    auto_check_vigencia: bool = True
+    auto_ingest_found_norms: bool = False
+    scrape_do_token: Optional[str] = None  # scrape.do API token for proxy scraping
+
+
+class DerogationSettings(BaseModel):
+    """Configuration for the derogation graph."""
+    enabled: bool = True
+    auto_detect: bool = True
+    verify_on_response: bool = True
+
+
 class AppConfig(BaseModel):
     """Root configuration for the Agent RAG Template."""
 
@@ -129,6 +152,8 @@ class AppConfig(BaseModel):
     ingestion: IngestionSettings = Field(default_factory=IngestionSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    legal_sources: LegalSourcesSettings = Field(default_factory=LegalSourcesSettings)
+    derogation: DerogationSettings = Field(default_factory=DerogationSettings)
 
 
 def _resolve_env_vars(data: Any) -> Any:

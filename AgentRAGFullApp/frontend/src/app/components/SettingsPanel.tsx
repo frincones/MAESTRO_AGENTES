@@ -24,6 +24,12 @@ interface AgentSettings {
   enableSelfReflection: boolean;
   enableHybridSearch: boolean;
   enableConversationMemory: boolean;
+  enableLegalSources: boolean;
+  enableDatosGov: boolean;
+  enableSenado: boolean;
+  enableFuncionPublica: boolean;
+  enableCorteCC: boolean;
+  enableAutoVigencia: boolean;
 }
 
 const DEFAULT_SETTINGS: AgentSettings = {
@@ -36,6 +42,12 @@ const DEFAULT_SETTINGS: AgentSettings = {
   enableSelfReflection: true,
   enableHybridSearch: true,
   enableConversationMemory: true,
+  enableLegalSources: true,
+  enableDatosGov: true,
+  enableSenado: true,
+  enableFuncionPublica: true,
+  enableCorteCC: true,
+  enableAutoVigencia: true,
 };
 
 export function SettingsPanel({ isOpen, onClose, darkMode, onToggleDarkMode }: SettingsPanelProps) {
@@ -184,6 +196,55 @@ export function SettingsPanel({ isOpen, onClose, darkMode, onToggleDarkMode }: S
               <p className="text-[10px] text-muted-foreground ml-10">
                 El agente recuerda conversaciones pasadas y las usa como contexto.
               </p>
+            </Section>
+
+            <Separator />
+
+            {/* Legal Sources */}
+            <Section icon={Database} title="Fuentes Legales">
+              <FieldRow label="Fuentes legales activas">
+                <Switch
+                  checked={settings.enableLegalSources}
+                  onCheckedChange={(v) => updateSetting('enableLegalSources', v)}
+                />
+              </FieldRow>
+              {settings.enableLegalSources && (
+                <>
+                  <FieldRow label="datos.gov.co (SUIN)">
+                    <Switch
+                      checked={settings.enableDatosGov}
+                      onCheckedChange={(v) => updateSetting('enableDatosGov', v)}
+                    />
+                  </FieldRow>
+                  <FieldRow label="Secretaría del Senado">
+                    <Switch
+                      checked={settings.enableSenado}
+                      onCheckedChange={(v) => updateSetting('enableSenado', v)}
+                    />
+                  </FieldRow>
+                  <FieldRow label="Función Pública">
+                    <Switch
+                      checked={settings.enableFuncionPublica}
+                      onCheckedChange={(v) => updateSetting('enableFuncionPublica', v)}
+                    />
+                  </FieldRow>
+                  <FieldRow label="Corte Constitucional">
+                    <Switch
+                      checked={settings.enableCorteCC}
+                      onCheckedChange={(v) => updateSetting('enableCorteCC', v)}
+                    />
+                  </FieldRow>
+                  <FieldRow label="Verificar vigencia auto">
+                    <Switch
+                      checked={settings.enableAutoVigencia}
+                      onCheckedChange={(v) => updateSetting('enableAutoVigencia', v)}
+                    />
+                  </FieldRow>
+                  <p className="text-[10px] text-muted-foreground ml-10">
+                    Consulta fuentes oficiales colombianas en cada pregunta legal y verifica si las normas siguen vigentes.
+                  </p>
+                </>
+              )}
             </Section>
 
             <Separator />

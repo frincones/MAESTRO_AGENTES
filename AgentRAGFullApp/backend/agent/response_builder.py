@@ -174,3 +174,113 @@ def format_response_with_sources(
 
     source_list = "\n".join(f"- {s}" for s in sources)
     return f"{response}\n\n---\n**Sources:**\n{source_list}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LEGAL: Live sources and vigencia formatting
+# ─────────────────────────────────────────────────────────────────────────────
+
+def format_live_source_results(live_results: list) -> str:
+    """Format live source results as context block for the LLM.
+
+    Args:
+        live_results: List of LiveSourceResult from source_router.search()
+    """
+    if not live_results:
+        return ""
+
+    lines = ["## RESULTADOS DE FUENTES VIVAS\n"]
+    lines.append("Los siguientes resultados provienen de fuentes oficiales en línea:\n")
+
+    for i, r in enumerate(live_results[:10], 1):
+        source_label = r.source.replace("_", " ").title() if hasattr(r, 'source') else "Fuente"
+        titulo = getattr(r, 'titulo', '') or ''
+        preview = getattr(r, 'preview', '') or ''
+        url = getattr(r, 'url', '') or ''
+        estado = getattr(r, 'estado', '') or ''
+
+        line = f"### Resultado {i} [{source_label}]"
+        if titulo:
+            line += f"\n**{titulo}**"
+        if estado:
+            line += f" — Estado: {estado}"
+        if preview:
+            line += f"\n{preview}"
+        if url:
+            line += f"\nURL: {url}"
+        lines.append(line)
+
+    return "\n\n".join(lines)
+
+
+def format_vigencia_results(vigencia_results: list) -> str:
+    """Format vigencia verification results as context block for the LLM.
+
+    Args:
+        vigencia_results: List of VigenciaResult from vigencia_checker
+    """
+    if not vigencia_results:
+        return ""
+
+    lines = ["## VIGENCIA VERIFICADA\n"]
+    lines.append("Estado de vigencia de las normas relevantes:\n")
+
+    for result in vigencia_results:
+        nombre = f"{result.tipo} {result.numero or ''} de {result.anio or ''}"
+
+        if not result.encontrada:
+            lines.append(f"⚠️ {nombre} — Vigencia no verificada (no indexada en el grafo)")
+            continue
+
+        if result.estado == "VIGENTE":
+            lines.append(f"✅ {nombre} — VIGENTE")
+        elif result.estado == "DEROGADA":
+            derogada_info = ""
+            if result.derogaciones:
+                d = result.derogaciones[0]
+                derogada_info = f" por {d.get('norma_tipo', '')} {d.get('norma_numero', '')} de {d.get('norma_anio', '')}"
+                if d.get('fecha_efecto'):
+                    derogada_info += f" (desde {d['fecha_efecto']})"
+            lines.append(f"❌ {nombre} — DEROGADA{derogada_info}")
+
+            # Show what replaced it
+            if result.derogaciones:
+                d = result.derogaciones[0]
+                lines.append(f"   → Norma vigente: {d.get('norma_tipo', '')} {d.get('norma_numero', '')} de {d.get('norma_anio', '')}")
+        elif result.estado == "MODIFICADA":
+            lines.append(f"⚠️ {nombre} — MODIFICADA (verificar artículos específicos)")
+            if result.derogaciones:
+                for d in result.derogaciones[:3]:
+                    arts = ", ".join(d.get("articulos_afectados", [])) or "varios"
+                    lines.append(f"   → {d.get('tipo_derogacion', 'Modificada')} por {d.get('norma_tipo', '')} {d.get('norma_numero', '')} de {d.get('norma_anio', '')} (artículos: {arts})")
+        else:
+            lines.append(f"❓ {nombre} — Estado: {result.estado}")
+
+    return "\n".join(lines)
+
+
+def build_legal_context(
+    retrieval_result: RetrievalResult,
+    live_results: Optional[list] = None,
+    vigencia_results: Optional[list] = None,
+) -> str:
+    """Build complete legal context combining RAG results, live sources, and vigencia.
+
+    This is the enriched version of build_context() for legal mode.
+    """
+    # Base RAG context (sanitized)
+    base_context = build_context(retrieval_result)
+
+    # Append live source results
+    if live_results:
+        live_block = format_live_source_results(live_results)
+        if live_block:
+            base_context += "\n\n" + live_block
+
+    # Append vigencia verification
+    if vigencia_results:
+        vigencia_block = format_vigencia_results(vigencia_results)
+        if vigencia_block:
+            base_context += "\n\n" + vigencia_block
+
+    return base_context

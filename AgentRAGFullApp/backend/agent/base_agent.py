@@ -16,10 +16,13 @@ from storage.base import BaseStorage
 from agent.system_prompts import build_system_prompt
 from agent.response_builder import (
     build_context,
+    build_legal_context,
     get_sources,
     get_confidence,
     format_response_with_sources,
     sanitize_llm_response,
+    format_live_source_results,
+    format_vigencia_results,
 )
 from utils.llm import get_openai_client
 
@@ -90,7 +93,6 @@ class RAGAgent:
         # Always preserve the user's actual message for display/logging purposes
         retrieval_result.query.original_query = message
 
-        context = build_context(retrieval_result)
         sources = get_sources(retrieval_result)
         confidence = get_confidence(retrieval_result)
         intent = (
@@ -98,6 +100,28 @@ class RAGAgent:
             if retrieval_result.query.intent
             else "knowledge"
         )
+
+        # Legal mode: search live sources and verify vigencia in parallel
+        live_results = None
+        vigencia_results = None
+        is_legal = self._is_legal_mode()
+
+        if is_legal and intent != "conversation":
+            live_results, vigencia_results = await self._enrich_with_legal_sources(
+                retrieval_query, retrieval_result
+            )
+
+        # Build context: legal mode uses enriched context with live sources + vigencia
+        if is_legal and (live_results or vigencia_results):
+            context = build_legal_context(retrieval_result, live_results, vigencia_results)
+            # Add live source names to the sources list
+            if live_results:
+                for lr in live_results:
+                    name = f"{getattr(lr, 'titulo', '')} ({getattr(lr, 'source', '')})"
+                    if name.strip(" ()"):
+                        sources.append(name)
+        else:
+            context = build_context(retrieval_result)
 
         # Load the full list of documents in the corpus for the allow-list.
         # Cached with 5-min TTL: avoids hitting Postgres on every chat turn.
@@ -133,6 +157,8 @@ class RAGAgent:
             "retrieval_result": retrieval_result,
             "retrieval_query": retrieval_query,
             "loaded_documents": loaded_doc_titles,
+            "vigencia_results": vigencia_results,
+            "live_results": live_results,
         }
         return messages, meta
 
@@ -178,7 +204,16 @@ class RAGAgent:
 
         session_id = session_id or str(uuid.uuid4())
 
+        # Legal mode: auto-ingest missing norms BEFORE building messages
+        ingested_norms = []
+        if self._is_legal_mode():
+            ingested_norms = await self._auto_ingest_missing_norms(message)
+            if ingested_norms:
+                self.invalidate_doc_cache()
+
         messages, meta = await self._build_messages(message, session_id)
+        if ingested_norms:
+            meta["ingested_norms"] = ingested_norms
 
         client = get_openai_client()
         response = await client.chat.completions.create(
@@ -201,6 +236,28 @@ class RAGAgent:
         assistant_message = sanitize_llm_response(
             assistant_message, allowed_documents=meta.get("loaded_documents")
         )
+
+        # Append vigencia verification (legal mode)
+        if meta.get("vigencia_results"):
+            vigencia_lines = ["\n\n---\n**Vigencia Verificada:**"]
+            for v in meta["vigencia_results"]:
+                if v.estado == "VIGENTE":
+                    vigencia_lines.append(f"- ✅ {v.tipo} {v.numero or ''} de {v.anio or ''} — VIGENTE")
+                elif v.estado == "DEROGADA":
+                    derog_info = ""
+                    if v.derogaciones:
+                        d = v.derogaciones[0]
+                        derog_info = f" por {d.get('norma_tipo', '')} {d.get('norma_numero', '')} de {d.get('norma_anio', '')}"
+                    vigencia_lines.append(f"- ❌ {v.tipo} {v.numero or ''} de {v.anio or ''} — DEROGADA{derog_info}")
+                elif v.estado == "MODIFICADA":
+                    vigencia_lines.append(f"- ⚠️ {v.tipo} {v.numero or ''} de {v.anio or ''} — MODIFICADA")
+                elif not v.encontrada:
+                    pass
+                else:
+                    vigencia_lines.append(f"- {v.tipo} {v.numero or ''} de {v.anio or ''} — {v.estado}")
+            if len(vigencia_lines) > 1:
+                assistant_message += "\n".join(vigencia_lines)
+
         assistant_message = format_response_with_sources(
             assistant_message, meta["retrieval_result"]
         )
@@ -242,6 +299,17 @@ class RAGAgent:
 
         session_id = session_id or str(uuid.uuid4())
 
+        # Legal mode: auto-ingest missing norms BEFORE building messages
+        if self._is_legal_mode():
+            ingested = await self._auto_ingest_missing_norms(message)
+            if ingested:
+                # Stream status messages to user
+                normas_str = ", ".join(ingested)
+                status_msg = f"📥 **Descargando e indexando normativa:** {normas_str}\n\n⏳ Analizando documentos legales para dar una respuesta fundamentada...\n\n---\n\n"
+                yield status_msg
+                # Invalidate doc cache so retrieval sees new documents
+                self.invalidate_doc_cache()
+
         messages, meta = await self._build_messages(message, session_id)
 
         client = get_openai_client()
@@ -277,6 +345,30 @@ class RAGAgent:
         full_response = sanitize_llm_response(
             full_response, allowed_documents=meta.get("loaded_documents")
         )
+
+        # Append vigencia verification block (legal mode)
+        vigencia_footer = ""
+        if meta.get("vigencia_results"):
+            vigencia_lines = ["\n\n---\n**Vigencia Verificada:**"]
+            for v in meta["vigencia_results"]:
+                if v.estado == "VIGENTE":
+                    vigencia_lines.append(f"- ✅ {v.tipo} {v.numero or ''} de {v.anio or ''} — VIGENTE")
+                elif v.estado == "DEROGADA":
+                    derog_info = ""
+                    if v.derogaciones:
+                        d = v.derogaciones[0]
+                        derog_info = f" por {d.get('norma_tipo', '')} {d.get('norma_numero', '')} de {d.get('norma_anio', '')}"
+                    vigencia_lines.append(f"- ❌ {v.tipo} {v.numero or ''} de {v.anio or ''} — DEROGADA{derog_info}")
+                elif v.estado == "MODIFICADA":
+                    vigencia_lines.append(f"- ⚠️ {v.tipo} {v.numero or ''} de {v.anio or ''} — MODIFICADA")
+                elif not v.encontrada:
+                    pass  # Skip not-found norms in footer
+                else:
+                    vigencia_lines.append(f"- {v.tipo} {v.numero or ''} de {v.anio or ''} — {v.estado}")
+            if len(vigencia_lines) > 1:
+                vigencia_footer = "\n".join(vigencia_lines)
+                yield vigencia_footer
+                full_response += vigencia_footer
 
         # Append sources at the end
         sources = meta["sources"]
@@ -534,6 +626,290 @@ class RAGAgent:
         """
         self._allow_list_cache = None
         self._allow_list_cached_at = 0.0
+
+    async def _auto_ingest_missing_norms(self, message: str) -> list[str]:
+        """Detect norm references in the query and auto-ingest any that aren't in the RAG.
+
+        Returns list of norm names that were ingested (empty if none needed).
+        """
+        import re
+
+        try:
+            from api.legal import _source_router, _derogation_graph, _storage, _embedder
+        except ImportError:
+            return []
+
+        if not _source_router or not _derogation_graph or not _storage:
+            return []
+
+        # Extract norm references from the user message
+        patterns = [
+            (r"(?:[Ll]ey)\s+(\d+)\s+(?:de\s+)?(\d{4})", "LEY"),
+            (r"(?:[Dd]ecreto)\s+(\d+)\s+(?:de\s+)?(\d{4})", "DECRETO"),
+            (r"(?:[Rr]esoluci[oó]n)\s+(\d+)\s+(?:de\s+)?(\d{4})", "RESOLUCION"),
+        ]
+
+        norm_refs = []
+        seen = set()
+        for pattern, tipo in patterns:
+            for match in re.finditer(pattern, message):
+                key = f"{tipo}:{match.group(1)}:{match.group(2)}"
+                if key not in seen:
+                    seen.add(key)
+                    norm_refs.append({
+                        "tipo": tipo,
+                        "numero": int(match.group(1)),
+                        "anio": int(match.group(2)),
+                    })
+
+        if not norm_refs:
+            return []
+
+        # Check which norms are already in the RAG (by document title)
+        loaded_titles = await self._get_loaded_doc_titles()
+        loaded_lower = {t.lower() for t in loaded_titles}
+
+        ingested = []
+
+        for ref in norm_refs:
+            nombre = f"{ref['tipo']} {ref['numero']} de {ref['anio']}"
+            nombre_variants = [
+                nombre.lower(),
+                f"{ref['tipo'].lower()} {ref['numero']} de {ref['anio']}",
+                f"{ref['tipo'].lower()}_{ref['numero']}_{ref['anio']}",
+                f"ley_{ref['numero']}_{ref['anio']}",
+                f"resolucion_{ref['numero']}_{ref['anio']}",
+                f"decreto_{ref['numero']}_{ref['anio']}",
+            ]
+
+            # Check if any variant is already loaded
+            already_loaded = any(
+                any(variant in title for variant in nombre_variants)
+                for title in loaded_lower
+            )
+
+            if already_loaded:
+                logger.info(f"Norm already in RAG: {nombre}")
+                continue
+
+            # Not loaded — fetch and ingest
+            logger.info(f"Auto-ingesting missing norm: {nombre}")
+
+            try:
+                norm_data = await _source_router.fetch_norm(
+                    ref["tipo"], ref["numero"], ref["anio"]
+                )
+
+                if not norm_data or not norm_data.get("texto_completo"):
+                    logger.warning(f"Could not fetch norm: {nombre}")
+                    continue
+
+                # Ingest to graph
+                from derogation.models import NormaCreate, TipoNorma, FuenteLegal
+                norma_create = NormaCreate(
+                    tipo=TipoNorma(ref["tipo"]),
+                    numero=ref["numero"],
+                    anio=ref["anio"],
+                    titulo=norm_data.get("titulo", nombre),
+                    fuente=FuenteLegal(norm_data.get("fuente", "manual")),
+                    fuente_url=norm_data.get("fuente_url"),
+                    fuente_id=norm_data.get("fuente_id"),
+                    texto_completo=norm_data.get("texto_completo"),
+                    sector=norm_data.get("sector"),
+                    metadata=norm_data.get("metadata", {}),
+                )
+
+                if _embedder:
+                    embed_text = f"{norm_data.get('titulo', '')} {norm_data.get('texto_completo', '')[:1000]}"
+                    embeddings = await _embedder.generate_embeddings_batch([embed_text])
+                    embedding = embeddings[0] if embeddings else None
+                else:
+                    embedding = None
+
+                await _derogation_graph.insert_norma(norma_create, embedding=embedding)
+
+                # Detect and register derogations
+                from derogation.detector import detect_derogations
+                from derogation.models import DerogacionCreate
+                derogations = detect_derogations(norm_data.get("texto_completo", ""))
+                for det in derogations:
+                    if det.norma_afectada_numero and det.norma_afectada_anio:
+                        affected = await _derogation_graph.get_norma(
+                            det.norma_afectada_tipo or ref["tipo"],
+                            det.norma_afectada_numero,
+                            det.norma_afectada_anio,
+                        )
+                        if affected:
+                            derog = DerogacionCreate(
+                                norma_origen_id=str((await _derogation_graph.get_norma(ref["tipo"], ref["numero"], ref["anio"]))["id"]),
+                                norma_destino_id=str(affected["id"]),
+                                tipo=det.tipo_derogacion,
+                                articulos_afectados=det.articulos_afectados,
+                                fuente_texto=det.texto_fuente,
+                                detectado_por="auto_regex",
+                                confianza=det.confianza,
+                            )
+                            await _derogation_graph.insert_derogacion(derog)
+
+                # Ingest to RAG (chunks)
+                from ingestion.pipeline import IngestionPipeline
+                from config.schema import load_config
+                config = load_config()
+                pipeline = IngestionPipeline(config, _storage)
+                await pipeline.ingest_text(
+                    text=norm_data.get("texto_completo", ""),
+                    title=norm_data.get("titulo", nombre),
+                    source=norm_data.get("fuente_url", "legal_source"),
+                    doc_type="legal_norm",
+                )
+
+                ingested.append(nombre)
+                logger.info(f"Auto-ingested: {nombre}")
+
+            except Exception as e:
+                logger.error(f"Auto-ingest failed for {nombre}: {e}")
+
+        # Also check derogation chain: if a norm is derogated, auto-ingest the replacement
+        for ref in norm_refs:
+            try:
+                vigencia = await self._check_derogation_and_ingest_replacement(ref, loaded_lower, ingested)
+                if vigencia:
+                    ingested.extend(vigencia)
+            except Exception as e:
+                logger.debug(f"Derogation chain check failed: {e}")
+
+        return ingested
+
+    async def _check_derogation_and_ingest_replacement(
+        self, ref: dict, loaded_lower: set, already_ingested: list
+    ) -> list[str]:
+        """If a norm is derogated, auto-ingest the norm that replaced it."""
+        from api.legal import _derogation_graph, _source_router, _storage, _embedder
+
+        if not _derogation_graph:
+            return []
+
+        norma = await _derogation_graph.get_norma(ref["tipo"], ref["numero"], ref["anio"])
+        if not norma or norma.get("estado") != "DEROGADA":
+            return []
+
+        # Find what derogated it
+        derogations = await _derogation_graph.get_derogations_for(str(norma["id"]))
+        ingested = []
+
+        for d in derogations:
+            replacement_nombre = f"{d.get('origen_tipo', '')} {d.get('origen_numero', '')} de {d.get('origen_anio', '')}"
+
+            # Skip if already loaded or already ingested in this cycle
+            if replacement_nombre in already_ingested:
+                continue
+
+            nombre_lower = replacement_nombre.lower()
+            if any(nombre_lower in t for t in loaded_lower):
+                continue
+
+            # Fetch and ingest the replacement
+            logger.info(f"Auto-ingesting replacement norm: {replacement_nombre}")
+            try:
+                norm_data = await _source_router.fetch_norm(
+                    d.get("origen_tipo", ""), d.get("origen_numero", 0), d.get("origen_anio", 0)
+                )
+                if norm_data and norm_data.get("texto_completo"):
+                    from ingestion.pipeline import IngestionPipeline
+                    from config.schema import load_config
+                    config = load_config()
+                    pipeline = IngestionPipeline(config, _storage)
+                    await pipeline.ingest_text(
+                        text=norm_data.get("texto_completo", ""),
+                        title=norm_data.get("titulo", replacement_nombre),
+                        source=norm_data.get("fuente_url", "legal_source"),
+                        doc_type="legal_norm",
+                    )
+                    ingested.append(replacement_nombre)
+                    logger.info(f"Auto-ingested replacement: {replacement_nombre}")
+            except Exception as e:
+                logger.error(f"Auto-ingest replacement failed for {replacement_nombre}: {e}")
+
+        return ingested
+
+    def _is_legal_mode(self) -> bool:
+        """Check if the agent is configured for legal mode."""
+        role = (self.config.agent.role or "").lower()
+        return any(kw in role for kw in ("legal", "abogado", "jurídic", "juridic", "derecho", "lawyer"))
+
+    async def _enrich_with_legal_sources(self, query: str, retrieval_result) -> tuple:
+        """Search live legal sources and verify vigencia in parallel.
+
+        Returns:
+            (live_results, vigencia_results) — both can be None if not available
+        """
+        import re
+
+        live_results = None
+        vigencia_results = None
+
+        try:
+            from api.legal import _source_router, _vigencia_checker
+        except ImportError:
+            logger.debug("Legal API not available for enrichment")
+            return None, None
+
+        # Task 1: Search live sources
+        if _source_router:
+            try:
+                result = await _source_router.search(query, limit=5)
+                live_results = result.get("results", [])
+                logger.info("Legal live search: %d results", len(live_results))
+            except Exception as e:
+                logger.warning("Live source search failed: %s", e)
+
+        # Task 2: Extract ALL norm references from query + RAG results + document titles
+        if _vigencia_checker:
+            try:
+                normas = []
+                patterns = [
+                    (r"(?:[Ll]ey)\s+(\d+)\s+(?:de\s+)?(\d{4})", "LEY"),
+                    (r"(?:[Dd]ecreto)\s+(\d+)\s+(?:de\s+)?(\d{4})", "DECRETO"),
+                    (r"(?:[Rr]esoluci[oó]n)\s+(\d+)\s+(?:de\s+)?(\d{4})", "RESOLUCION"),
+                ]
+
+                # Extract from user query
+                for pattern, tipo in patterns:
+                    for match in re.finditer(pattern, query):
+                        normas.append({"tipo": tipo, "numero": match.group(1), "anio": match.group(2)})
+
+                # Extract from RAG retrieval results (chunks content)
+                for r in (retrieval_result.results or [])[:10]:
+                    content = r.content or ""
+                    for pattern, tipo in patterns:
+                        for match in re.finditer(pattern, content):
+                            normas.append({"tipo": tipo, "numero": match.group(1), "anio": match.group(2)})
+
+                # Extract from document titles in sources
+                for r in (retrieval_result.results or [])[:10]:
+                    title = r.document_title or ""
+                    for pattern, tipo in patterns:
+                        for match in re.finditer(pattern, title):
+                            normas.append({"tipo": tipo, "numero": match.group(1), "anio": match.group(2)})
+
+                # Deduplicate
+                seen = set()
+                unique_normas = []
+                for n in normas:
+                    key = f"{n['tipo']}:{n['numero']}:{n['anio']}"
+                    if key not in seen:
+                        seen.add(key)
+                        unique_normas.append(n)
+
+                logger.info("Legal vigencia check: %d unique norms extracted", len(unique_normas))
+
+                if unique_normas:
+                    vigencia_results = await _vigencia_checker.verify_results(unique_normas[:15])
+                    logger.info("Legal vigencia results: %d checked", len(vigencia_results))
+            except Exception as e:
+                logger.warning("Vigencia check failed: %s", e)
+
+        return live_results, vigencia_results
 
     @staticmethod
     def new_session_id() -> str:

@@ -76,6 +76,30 @@ async def lifespan(app: FastAPI):
     # Pre-load the cross-encoder reranker model
     await _prewarm_reranker()
 
+    # Initialize legal sources and derogation graph
+    try:
+        from legal_sources.source_router import LegalSourceRouter
+        from derogation.graph import DerogationGraph
+        from derogation.vigencia_checker import VigenciaChecker
+        from ingestion.embedder import create_embedder
+        from api.legal import init_legal_api
+
+        legal_config = getattr(config, 'legal_sources', None)
+        legal_config_dict = legal_config.model_dump() if legal_config else {}
+        source_router = LegalSourceRouter(legal_config_dict)
+
+        derogation_graph = DerogationGraph(storage.pool)
+        vigencia_checker = VigenciaChecker(derogation_graph)
+        embedder = create_embedder(
+            model=config.ingestion.embedding.model,
+            use_cache=True,
+        )
+
+        init_legal_api(source_router, derogation_graph, vigencia_checker, storage, embedder)
+        logger.info("Legal sources and derogation graph initialized")
+    except Exception as e:
+        logger.warning("Legal system init failed (non-fatal): %s", e)
+
     yield
 
     # Cleanup on shutdown
@@ -106,6 +130,7 @@ from api.ingest import router as ingest_router
 from api.documents import router as documents_router
 from api.sessions import router as sessions_router
 from api.usage import router as usage_router
+from api.legal import router as legal_router
 
 app.include_router(health_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
@@ -113,6 +138,7 @@ app.include_router(ingest_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(sessions_router, prefix="/api")
 app.include_router(usage_router, prefix="/api")
+app.include_router(legal_router)  # Already has /api/legal prefix
 
 
 def main():

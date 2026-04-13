@@ -115,3 +115,28 @@ storage:
   similarity_threshold: 0.10  # ⚖️ Legal-tuned: very permissive recall.
                               # The cross-encoder re-ranker handles precision.
                               # Default for general use: 0.15.
+
+# ─────────────────────────────────────────────────────────────────────
+# LEGAL SOURCES — Fuentes legales colombianas en línea
+# ─────────────────────────────────────────────────────────────────────
+legal_sources:
+  enabled: true
+  datos_gov_co: true          # API REST datos.gov.co (SUIN + Corte CC) — gratis, rápida
+  senado: true                # HTML scraping Secretaría del Senado — gratis
+  funcion_publica: true       # HTML scraping Gestor Normativo — gratis
+  corte_constitucional: true  # HTML Relatoria Corte Constitucional — gratis
+  corte_suprema: false        # Requiere Playwright (Angular SPA) — pesado, opt-in
+  diario_oficial: false       # Requiere Playwright (PrimeFaces) — pesado, opt-in
+  max_concurrent_sources: 3
+  search_timeout_seconds: 15
+  auto_check_vigencia: true   # Verificar vigencia automáticamente en cada consulta
+  auto_ingest_found_norms: false  # Auto-guardar normas encontradas en el RAG
+  scrape_do_token: "${SCRAPE_DO_TOKEN}"  # Token de scrape.do para proxy scraping
+
+# ─────────────────────────────────────────────────────────────────────
+# DEROGATION GRAPH — Grafo de derogaciones legales
+# ─────────────────────────────────────────────────────────────────────
+derogation:
+  enabled: true
+  auto_detect: true           # Detectar derogaciones automáticamente al ingestar
+  verify_on_response: true    # Verificar vigencia antes de responder

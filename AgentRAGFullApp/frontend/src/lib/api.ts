@@ -163,3 +163,150 @@ export async function checkHealth(): Promise<{ status: string }> {
   const res = await fetch(`${API_BASE_URL}/api/health`);
   return jsonOrThrow(res);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// LEGAL ENDPOINTS
+// ─────────────────────────────────────────────────────────────────────
+
+export interface LegalSearchResult {
+  source: string;
+  tipo: string | null;
+  numero: number | null;
+  anio: number | null;
+  titulo: string | null;
+  estado: string | null;
+  url: string | null;
+  preview: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface VigenciaResult {
+  norma_id: string | null;
+  tipo: string;
+  numero: number | null;
+  anio: number | null;
+  titulo: string | null;
+  estado: string;
+  encontrada: boolean;
+  derogaciones: Record<string, unknown>[];
+  cadena_completa: Record<string, unknown>[];
+  badge: string;
+}
+
+export interface NormaItem {
+  id: string;
+  tipo: string;
+  numero: number | null;
+  anio: number | null;
+  titulo: string | null;
+  estado: string;
+  fecha_expedicion: string | null;
+  fuente_url: string | null;
+  sector: string | null;
+  temas: string[];
+  created_at: string | null;
+}
+
+export interface SentenciaItem {
+  source: string;
+  tipo: string | null;
+  numero: number | null;
+  anio: number | null;
+  titulo: string | null;
+  estado: string | null;
+  url: string | null;
+  preview: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export async function searchLegalSources(
+  query: string,
+  sources?: string[],
+  limit = 10,
+): Promise<{ results: LegalSearchResult[]; sources_consulted: string[]; duration_ms: number; errors: unknown[] }> {
+  const res = await fetch(`${API_BASE_URL}/api/legal/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, sources, limit }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function checkVigencia(
+  tipo: string,
+  numero: number,
+  anio: number,
+): Promise<VigenciaResult> {
+  const res = await fetch(`${API_BASE_URL}/api/legal/vigencia`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tipo, numero, anio }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function ingestNorma(
+  source: string,
+  tipo: string,
+  numero: number,
+  anio: number,
+): Promise<{ status: string; norma_id: string; titulo: string; derogations_detected: number; rag_chunks: number }> {
+  const res = await fetch(`${API_BASE_URL}/api/legal/ingest-norma`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source, tipo, numero, anio }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function listNormas(
+  tipo?: string,
+  estado?: string,
+  limit = 50,
+): Promise<{ normas: NormaItem[]; total: number }> {
+  const params = new URLSearchParams();
+  if (tipo) params.set('tipo', tipo);
+  if (estado) params.set('estado', estado);
+  params.set('limit', String(limit));
+  const res = await fetch(`${API_BASE_URL}/api/legal/normas?${params}`);
+  return jsonOrThrow(res);
+}
+
+export async function getDerogaciones(
+  normaId: string,
+): Promise<{ norma_id: string; chain: Record<string, unknown>[] }> {
+  const res = await fetch(`${API_BASE_URL}/api/legal/normas/${normaId}/derogaciones`);
+  return jsonOrThrow(res);
+}
+
+export async function searchJurisprudencia(
+  query: string,
+  corte?: string,
+  tipo_sentencia?: string,
+  limit = 10,
+): Promise<{ sentencias: SentenciaItem[]; total: number }> {
+  const res = await fetch(`${API_BASE_URL}/api/legal/jurisprudencia/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, corte, tipo_sentencia, limit }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function listJurisprudencia(
+  corte?: string,
+  tipo?: string,
+  limit = 50,
+): Promise<{ sentencias: Record<string, unknown>[]; total: number }> {
+  const params = new URLSearchParams();
+  if (corte) params.set('corte', corte);
+  if (tipo) params.set('tipo', tipo);
+  params.set('limit', String(limit));
+  const res = await fetch(`${API_BASE_URL}/api/legal/jurisprudencia?${params}`);
+  return jsonOrThrow(res);
+}
+
+export async function checkLegalHealth(): Promise<{ status: string; sources: Record<string, boolean> }> {
+  const res = await fetch(`${API_BASE_URL}/api/legal/health`);
+  return jsonOrThrow(res);
+}
