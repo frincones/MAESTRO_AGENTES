@@ -379,24 +379,25 @@ class RAGAgent:
         )
         retrieval_result.query.original_query = message
 
-        # Phase 4: Legal — if no good results, LLM identifies needed norms
+        # Phase 4: Legal — ALWAYS try to identify and download needed norms
         llm_ingested = []
         if is_legal:
             has_good = retrieval_result.results and any(
                 r.best_score > 0.5 for r in retrieval_result.results[:3]
             )
-            if not has_good:
-                yield "[STATUS] Investigando qué normativa aplica...\n"
-                llm_ingested = await self._identify_needed_norms_via_llm(message, retrieval_result)
-                if llm_ingested:
-                    for n in llm_ingested:
-                        yield f"[INGEST] {n}\n"
-                    self.invalidate_doc_cache()
-                    yield "[STATUS] Buscando en documentos recién indexados...\n"
-                    retrieval_result = await self.retrieval.retrieve(
-                        query=retrieval_query, session_id=session_id,
-                    )
-                    retrieval_result.query.original_query = message
+            # ALWAYS investigate — even with some results, there might be
+            # more specific norms needed for a complete answer
+            yield "[STATUS] Investigando normativa aplicable...\n"
+            llm_ingested = await self._identify_needed_norms_via_llm(message, retrieval_result)
+            if llm_ingested:
+                for n in llm_ingested:
+                    yield f"[INGEST] {n}\n"
+                self.invalidate_doc_cache()
+                yield "[STATUS] Buscando en documentos recién indexados...\n"
+                retrieval_result = await self.retrieval.retrieve(
+                    query=retrieval_query, session_id=session_id,
+                )
+                retrieval_result.query.original_query = message
 
         # Phase 5: Legal enrichment — live sources + vigencia
         live_results = None
@@ -974,31 +975,32 @@ class RAGAgent:
 
     async def _identify_needed_norms_via_llm(self, message: str, retrieval_result) -> list[str]:
         """Use LLM to identify which Colombian norms are needed to answer a query.
+        ALWAYS runs — even with existing results, identifies additional norms.
         Returns list of norm names that were ingested."""
         import re
 
-        # Check if retrieval found enough context
-        has_good_context = (
-            retrieval_result.results
-            and any(r.best_score > 0.5 for r in retrieval_result.results[:3])
-        )
-        if has_good_context:
-            return []
-
         try:
+            # Build context about what's already loaded
+            loaded = await self._get_loaded_doc_titles()
+            loaded_str = ", ".join(loaded[:10]) if loaded else "ninguno"
+
             client = get_openai_client()
             response = await client.chat.completions.create(
                 model=self.config.agent.utility_model,
                 temperature=0,
-                max_tokens=200,
+                max_tokens=400,
                 messages=[
                     {"role": "system", "content": (
                         "Eres un experto en derecho colombiano. El usuario hizo una consulta legal. "
-                        "Identifica la norma colombiana principal que regula ese tema. "
-                        "Responde SOLO con el formato: TIPO NUMERO AÑO (ej: LEY 675 2001). "
-                        "Si identificas múltiples normas, pon una por línea. "
-                        "Si no sabes, responde: NONE. "
-                        "No expliques nada más."
+                        "Identifica TODAS las normas colombianas (leyes, decretos, resoluciones, "
+                        "codigos) que se necesitan para responder completamente esta consulta. "
+                        "Incluye normas de CUALQUIER area: civil, penal, laboral, comercial, "
+                        "administrativo, ambiental, deportivo, propiedad horizontal, etc. "
+                        f"Ya estan cargados: {loaded_str}. "
+                        "NO repitas normas ya cargadas. "
+                        "Responde SOLO con formato: TIPO NUMERO AÑO (una por linea). "
+                        "Ejemplo: LEY 675 2001\nDECRETO 1072 2015\nLEY 599 2000\n"
+                        "Si no se necesitan normas adicionales, responde: NONE"
                     )},
                     {"role": "user", "content": message},
                 ],
