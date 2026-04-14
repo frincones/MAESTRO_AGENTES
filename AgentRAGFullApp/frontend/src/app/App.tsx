@@ -275,12 +275,12 @@ export default function App() {
     ? messages.find(m => m.id === activityMessageId) : null;
 
   return (
-    <div className="h-screen h-dvh flex overflow-hidden bg-background">
-      {/* Sidebar - overlay on mobile */}
+    <div className="h-screen flex overflow-hidden bg-background">
+      {/* Sidebar — fixed overlay, never disrupts flex layout */}
       {isSidebarOpen && (
         <>
-          <div className="fixed inset-0 bg-black/30 z-30 md:hidden" onClick={() => setIsSidebarOpen(false)} />
-          <div className="fixed left-0 top-0 h-full z-40 md:relative md:z-auto">
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setIsSidebarOpen(false)} />
+          <div className="fixed left-0 top-0 h-full z-50">
             <Sidebar
               onNewChat={handleNewChat}
               darkMode={darkMode}
@@ -296,8 +296,8 @@ export default function App() {
         </>
       )}
 
-      {/* Main area */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      {/* Main area — always full width, never affected by sidebar */}
+      <div className="flex-1 flex flex-col overflow-hidden w-full">
         <Navbar
           title={messages.length > 0 ? messages[0]?.content.slice(0, 50) + '...' : 'Nueva Conversacion'}
           onShare={handleShare}

@@ -66,7 +66,7 @@ export function Sidebar({
         animate={{ x: 0 }}
         exit={{ x: -300 }}
         transition={{ duration: 0.3, ease: 'easeOut' }}
-        className="fixed md:relative w-60 h-screen bg-sidebar border-r border-sidebar-border flex flex-col z-50"
+        className="w-60 h-screen bg-sidebar border-r border-sidebar-border flex flex-col"
       >
         {/* Header */}
         <div className="p-3 space-y-3">
