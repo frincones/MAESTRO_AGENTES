@@ -1,16 +1,14 @@
 agent:
   name: "ColombiaCódigo"
   role: "Asistente Legal Colombiano - Análisis Documental Jurídico"
-  primary_model: "gpt-4o-mini"   # Optimized for speed + cost.
-                                 # For legal use cases, temperature matters more than
-                                 # model size. Switch to gpt-4o only if you need deeper
-                                 # reasoning on complex multi-document analyses.
+  primary_model: "gpt-4o"        # Full model for deep legal analysis.
+                                 # gpt-4o-mini used only for chitchat and utility tasks.
   utility_model: "gpt-4o-mini"
   temperature: 0.1               # ⚖️ Legal precision: deterministic, low creativity.
                                  # 0.1 = consistent citations, minimal hallucination risk.
                                  # Industry standard for legal/medical AI.
-  max_tokens: 3000               # Legal analysis needs space for citations, articles, and analysis.
-                                 # 1800 was too tight for complex multi-article responses.
+  max_tokens: 4000               # Deep legal analysis with jurisprudence citations.
+                                 # 3000 was tight for multi-area + precedent analysis.
   # db_tables_schema: |
   #   - leads (id, name, email, status, value, assigned_to, created_at)
   #   - quotations (id, lead_id, amount, status, valid_until)
@@ -93,7 +91,7 @@ retrieval:
                             # needs surrounding articles, not just the matching one.
 
   self_reflection:
-    enabled: false          # Mata UX (dobla latencia: +5-10s) y rara vez ayuda
+    enabled: true           # Re-enabled: retry on low-confidence retrievals for legal quality
                             # cuando hybrid+rerank ya están activos.
                             # Solo usar para batch async de alta importancia.
     model: "gpt-4o-mini"

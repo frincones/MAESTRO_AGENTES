@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -219,3 +219,66 @@ async def reset_session():
     """Generate a fresh session ID for a new conversation."""
     new_id = RAGAgent.new_session_id()
     return {"status": "reset", "new_session_id": new_id}
+
+
+@router.post("/attach")
+async def attach_file(
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+):
+    """Upload and ingest a file to be used in the current chat session."""
+    from ingestion.pipeline import IngestionPipeline
+    from utils.db import get_storage
+    from config.schema import load_config
+    import uuid
+    from pathlib import Path
+
+    config = load_config()
+    storage = await get_storage(config.storage)
+
+    # Save file temporarily
+    upload_dir = Path(".cache/uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename or "file.txt").suffix
+    temp_path = upload_dir / f"{uuid.uuid4()}{ext}"
+
+    content = await file.read()
+    temp_path.write_bytes(content)
+
+    try:
+        # Ingest synchronously (user waits)
+        pipeline = IngestionPipeline(config, storage)
+        doc_id = await pipeline.ingest_file(
+            str(temp_path),
+            original_filename=file.filename,
+        )
+
+        if not doc_id:
+            raise HTTPException(400, "Could not process file")
+
+        # Get chunk count
+        docs = await storage.list_documents()
+        chunk_count = 0
+        for d in docs:
+            if d["id"] == doc_id:
+                chunk_count = d.get("chunk_count", 0)
+                break
+
+        # Save attachment reference
+        await storage.save_chat_attachment(session_id, doc_id, file.filename or "file", chunk_count)
+
+        # Invalidate doc cache in agent
+        agent = await _get_agent()
+        agent.invalidate_doc_cache()
+
+        return {
+            "status": "ok",
+            "doc_id": doc_id,
+            "filename": file.filename,
+            "chunk_count": chunk_count,
+        }
+    except Exception as e:
+        logger.error(f"File attach failed: {e}")
+        raise HTTPException(500, f"Error processing file: {str(e)}")
+    finally:
+        temp_path.unlink(missing_ok=True)

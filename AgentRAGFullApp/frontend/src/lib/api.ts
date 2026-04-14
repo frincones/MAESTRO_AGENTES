@@ -306,6 +306,20 @@ export async function listJurisprudencia(
   return jsonOrThrow(res);
 }
 
+export async function attachFileToChat(
+  file: File,
+  sessionId: string,
+): Promise<{ status: string; doc_id: string; filename: string; chunk_count: number }> {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('session_id', sessionId);
+  const res = await fetch(`${API_BASE_URL}/api/chat/attach`, {
+    method: 'POST',
+    body: fd,
+  });
+  return jsonOrThrow(res);
+}
+
 export async function checkLegalHealth(): Promise<{ status: string; sources: Record<string, boolean> }> {
   const res = await fetch(`${API_BASE_URL}/api/legal/health`);
   return jsonOrThrow(res);

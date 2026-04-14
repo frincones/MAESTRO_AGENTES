@@ -56,7 +56,7 @@ class RAGAgent:
         # Refreshed every 5 min or when invalidated manually after ingestion.
         self._allow_list_cache: Optional[List[str]] = None
         self._allow_list_cached_at: float = 0.0
-        self._allow_list_ttl_s: float = 300.0  # 5 minutes
+        self._allow_list_ttl_s: float = 30.0  # 30 seconds — fast refresh after ingest
 
     async def _build_messages(
         self,
@@ -352,6 +352,17 @@ class RAGAgent:
 
         yield "[STATUS] Analizando consulta...\n"
 
+        # Phase 0: Load Case State (accumulated context across all turns)
+        from agent.case_state import CaseState
+        case_state = CaseState(session_id)
+        try:
+            saved = await self.storage.get_case_state(session_id)
+            if saved:
+                case_state = CaseState(session_id, saved)
+                logger.info(f"CaseState loaded: turn {case_state.turn_count}, {len(case_state.facts)} facts")
+        except Exception as e:
+            logger.debug("Could not load case state: %s", e)
+
         # Phase 1: Auto-ingest norms mentioned by number in the query
         is_legal = self._is_legal_mode()
         if is_legal:
@@ -363,7 +374,7 @@ class RAGAgent:
                 self.invalidate_doc_cache()
 
         # Phase 2: Load history
-        yield "[STATUS] Cargando contexto de conversación...\n"
+        yield "[STATUS] Cargando contexto de conversacion...\n"
         history: list = []
         try:
             history = await self.storage.get_session_messages(session_id)
@@ -425,6 +436,31 @@ class RAGAgent:
             if vigencia_results:
                 yield "[STATUS] Verificando vigencia de normas...\n"
 
+            # Phase 5.5: Search jurisprudence
+            yield "[STATUS] Buscando jurisprudencia relevante...\n"
+            try:
+                from api.legal import _source_router
+                if _source_router:
+                    juris_query = retrieval_query
+                    if case_state.areas_involved:
+                        juris_query = f"{' '.join(case_state.areas_involved)} {message}"
+                    juris_results = await _source_router.search_sentencias(
+                        query=juris_query, limit=5,
+                    )
+                    if juris_results:
+                        yield f"[STATUS] {len(juris_results)} sentencias encontradas\n"
+                        # Add to context
+                        juris_block = "\n\nJURISPRUDENCIA RELEVANTE ENCONTRADA:\n"
+                        for jr in juris_results[:3]:
+                            juris_block += f"- {getattr(jr, 'titulo', '')} ({getattr(jr, 'source', '')})\n"
+                            preview = getattr(jr, 'preview', '')
+                            if preview:
+                                juris_block += f"  {preview[:150]}\n"
+                        # Will be added to context in Phase 6
+            except Exception as e:
+                logger.debug(f"Jurisprudence search failed: {e}")
+                juris_results = []
+
         # Phase 6: Build context & messages
         sources = get_sources(retrieval_result)
         confidence = get_confidence(retrieval_result)
@@ -442,6 +478,11 @@ class RAGAgent:
 
         loaded_doc_titles = await self._get_loaded_doc_titles()
 
+        # Inject CaseState into context (replaces need for 100 history messages)
+        case_context = case_state.to_context_block()
+        if case_context:
+            context = case_context + "\n\n" + context
+
         system_prompt = build_system_prompt(
             agent_name=self.config.agent.name,
             agent_role=self.config.agent.role,
@@ -454,8 +495,9 @@ class RAGAgent:
         )
 
         llm_messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        # With CaseState, we only need last 5 turns for immediate context
         if history:
-            for h in history[-(10 * 2):]:
+            for h in history[-(5 * 2):]:
                 llm_messages.append({"role": h["role"], "content": h["content"]})
         llm_messages.append({"role": "user", "content": message})
 
@@ -557,6 +599,15 @@ class RAGAgent:
         if source_refs:
             yield f"\n[SOURCEREFS] {json.dumps(source_refs, ensure_ascii=False)}\n"
 
+        # Update CaseState with this exchange
+        try:
+            await case_state.update_from_exchange(message, full_response, self.config.agent.utility_model)
+            await self.storage.save_case_state(session_id, case_state.to_dict(), case_state.turn_count)
+            cs_data = case_state.to_dict()
+            yield f"\n[CASESTATE] {json.dumps(cs_data, ensure_ascii=False)}\n"
+        except Exception as e:
+            logger.warning(f"CaseState save failed: {e}")
+
         # Duration
         duration = int(time.time() - start_time)
         yield f"\n[DURATION] {duration}s\n"
@@ -566,7 +617,7 @@ class RAGAgent:
             session_id=session_id,
             user_message=message,
             assistant_message=full_response,
-            intent=meta["intent"],
+            intent=intent,
             sources_used=sources,
         )
 
@@ -575,7 +626,7 @@ class RAGAgent:
             session_id=session_id,
             user_message=message,
             assistant_message=full_response,
-            intent=meta["intent"],
+            intent=intent,
             sources_used=sources,
         )
 

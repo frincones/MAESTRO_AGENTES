@@ -639,6 +639,78 @@ class PostgresStorage(BaseStorage):
             logger.info("Deleted session %s", session_id)
         return deleted
 
+    # -- Case State --
+
+    async def save_case_state(self, session_id: str, state: dict, turn_count: int) -> None:
+        """Persist case state for a session (upsert)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO case_states (session_id, state, turn_count, updated_at)
+                   VALUES ($1, $2::jsonb, $3, NOW())
+                   ON CONFLICT (session_id)
+                   DO UPDATE SET state = $2::jsonb, turn_count = $3, updated_at = NOW()""",
+                session_id, json.dumps(state), turn_count,
+            )
+
+    async def get_case_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load case state for a session."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT state, turn_count FROM case_states WHERE session_id = $1",
+                session_id,
+            )
+            if row:
+                state = json.loads(row["state"]) if row["state"] else {}
+                state["turn_count"] = row["turn_count"]
+                return state
+            return None
+
+    # -- Chat Attachments --
+
+    async def save_chat_attachment(
+        self, session_id: str, doc_id: str, filename: str, chunk_count: int = 0
+    ) -> None:
+        """Record a file attachment for a chat session."""
+        async with self.pool.acquire() as conn:
+            # Get latest conversation row for this session
+            row = await conn.fetchrow(
+                "SELECT id, attachments FROM conversations WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
+                session_id,
+            )
+            if row:
+                attachments = json.loads(row["attachments"]) if row["attachments"] else []
+                attachments.append({
+                    "doc_id": doc_id, "filename": filename,
+                    "chunk_count": chunk_count, "status": "completed"
+                })
+                await conn.execute(
+                    "UPDATE conversations SET attachments = $1::jsonb WHERE id = $2::uuid",
+                    json.dumps(attachments), str(row["id"]),
+                )
+
+    async def get_session_attachments(self, session_id: str) -> List[Dict[str, Any]]:
+        """Get all file attachments for a session."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT attachments FROM conversations WHERE session_id = $1 AND attachments != '[]'::jsonb ORDER BY created_at",
+                session_id,
+            )
+            all_attachments = []
+            for r in rows:
+                atts = json.loads(r["attachments"]) if r["attachments"] else []
+                all_attachments.extend(atts)
+            return all_attachments
+
+    async def get_document_chunks(self, document_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get chunks for a specific document."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT content, chunk_index, metadata FROM chunks WHERE document_id = $1::uuid ORDER BY chunk_index LIMIT $2",
+                document_id, limit,
+            )
+            return [{"content": r["content"], "index": r["chunk_index"],
+                     "metadata": json.loads(r["metadata"]) if r["metadata"] else {}} for r in rows]
+
     # -- Legal: Normas search --
 
     async def search_normas(

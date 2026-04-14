@@ -6,6 +6,7 @@ import { MessageInput } from './components/MessageInput';
 import { SettingsPanel } from './components/SettingsPanel';
 import { KnowledgePanel } from './components/KnowledgePanel';
 import ActivityPanel from './components/ActivityPanel';
+import SessionStats from './components/SessionStats';
 import type { VigenciaItem, SourceRef } from './components/ActivityPanel';
 import type { ThinkingStep } from './components/AgentThinking';
 import { Toaster } from './components/ui/sonner';
@@ -51,6 +52,7 @@ export default function App() {
 
   // Thinking state — live during streaming
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
+  const [caseState, setCaseState] = useState<Record<string, unknown> | null>(null);
 
   // Responsive: open sidebar by default on desktop
   useEffect(() => {
@@ -168,6 +170,14 @@ export default function App() {
                 const json = trimmed.replace('[SOURCEREFS] ', '');
                 const refs = JSON.parse(json) as SourceRef[];
                 collectedSourceRefs.push(...refs);
+              } catch { /* ignore */ }
+
+            } else if (trimmed.startsWith('[CASESTATE] ')) {
+              // Case state update — for session stats
+              try {
+                const json = trimmed.replace('[CASESTATE] ', '');
+                const cs = JSON.parse(json);
+                setCaseState(cs);
               } catch { /* ignore */ }
 
             } else if (trimmed.startsWith('[DURATION] ')) {
@@ -317,6 +327,8 @@ export default function App() {
           onOpenKnowledge={() => setIsKnowledgeOpen(true)}
         />
 
+        <SessionStats caseState={caseState} />
+
         <ChatArea
           messages={messages}
           isLoading={isLoading}
@@ -329,6 +341,7 @@ export default function App() {
           isLoading={isLoading}
           onStop={handleStop}
           isEmpty={messages.length === 0}
+          sessionId={sessionId}
         />
       </div>
 
