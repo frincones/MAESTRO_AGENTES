@@ -634,17 +634,17 @@ class RAGAgent:
                     if v.derogaciones:
                         d = v.derogaciones[0]
                         vdata["derogada_por"] = f"{d.get('norma_tipo','')} {d.get('norma_numero','')} de {d.get('norma_anio','')}"
-                    yield f"\n[VIGENCIA] {json.dumps(vdata, ensure_ascii=False)}\n"
+                    yield E("vigencia", data=vdata)
 
         # Jurisprudencia for sidebar
         import json
         if juris_for_frontend:
             for jf in juris_for_frontend:
-                yield f"\n[JURISPRUDENCIA] {json.dumps(jf, ensure_ascii=False)}\n"
+                yield E("jurisprudencia", data=jf)
 
         # Sources with URLs for sidebar
         if sources:
-            yield f"\n[SOURCES] {json.dumps(sources, ensure_ascii=False)}\n"
+            yield E("sources", data=sources)
 
         # Emit source references with real URLs for the activity panel
         source_refs = []
@@ -673,20 +673,19 @@ class RAGAgent:
                     source_refs.append(ref)
 
         if source_refs:
-            yield f"\n[SOURCEREFS] {json.dumps(source_refs, ensure_ascii=False)}\n"
+            yield E("sourcerefs", data=source_refs)
 
         # Update CaseState with this exchange
         try:
             await case_state.update_from_exchange(message, full_response, self.config.agent.utility_model)
             await self.storage.save_case_state(session_id, case_state.to_dict(), case_state.turn_count)
-            cs_data = case_state.to_dict()
-            yield f"\n[CASESTATE] {json.dumps(cs_data, ensure_ascii=False)}\n"
+            yield E("casestate", data=case_state.to_dict())
         except Exception as e:
             logger.warning(f"CaseState save failed: {e}")
 
         # Duration
         duration = int(time.time() - start_time)
-        yield f"\n[DURATION] {duration}s\n"
+        yield E("done", duration=duration)
 
         # ALWAYS persist chat history (lightweight) for in-session context
         await self._save_chat_history(
