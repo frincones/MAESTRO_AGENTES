@@ -108,15 +108,21 @@ export default function App() {
         let duration: number | undefined;
 
         const processLine = (line: string) => {
-          const t = line.trim();
-          if (!t) return;
+          const t = line.trimEnd();  // Keep leading spaces, trim trailing only
+
+          // Empty line = paragraph break (preserve for formatting)
+          if (t === '' && contentStarted) {
+            acc += '\n';
+            return;
+          }
+          if (t === '') return;
 
           if (t.startsWith('[STATUS] ')) {
             if (collectedSteps.length > 0) collectedSteps[collectedSteps.length - 1].status = 'completed';
-            collectedSteps.push({ id: `s-${stepCounter++}`, text: t.slice(9), status: 'active', type: 'status', timestamp: Date.now() });
+            collectedSteps.push({ id: `s-${stepCounter++}`, text: t.slice(9).trim(), status: 'active', type: 'status', timestamp: Date.now() });
             setThinkingSteps([...collectedSteps]);
           } else if (t.startsWith('[INGEST] ')) {
-            collectedSteps.push({ id: `i-${stepCounter++}`, text: t.slice(9), status: 'completed', type: 'ingest', timestamp: Date.now() });
+            collectedSteps.push({ id: `i-${stepCounter++}`, text: t.slice(9).trim(), status: 'completed', type: 'ingest', timestamp: Date.now() });
             setThinkingSteps([...collectedSteps]);
           } else if (t.startsWith('[CONTENT]')) {
             contentStarted = true;
@@ -135,7 +141,6 @@ export default function App() {
           } else if (t.startsWith('[DURATION] ')) {
             duration = parseInt(t.slice(11), 10);
           } else if (!t.startsWith('[')) {
-            // Plain text — content (either after [CONTENT] or chitchat without protocol)
             contentStarted = true;
             acc += t + '\n';
           }
