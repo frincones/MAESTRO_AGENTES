@@ -1,7 +1,6 @@
 import { motion } from 'motion/react';
 import { X, Clock, Check, Download, Search, Scale, Brain, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from './ui/button';
-import { ScrollArea } from './ui/scroll-area';
 import { useState } from 'react';
 import type { ThinkingStep } from './AgentThinking';
 
@@ -66,7 +65,7 @@ export default function ActivityPanel({ isOpen, onClose, steps, duration, vigenc
         animate={{ x: 0 }}
         exit={{ x: '100%' }}
         transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-        className="fixed right-0 top-0 h-full w-full max-w-sm bg-background border-l border-border z-50 flex flex-col shadow-xl
+        className="fixed right-0 top-0 h-screen w-full max-w-sm bg-background border-l border-border z-50 flex flex-col shadow-xl overflow-hidden
                    md:w-80 md:max-w-none"
       >
         {/* Header */}
@@ -83,7 +82,7 @@ export default function ActivityPanel({ isOpen, onClose, steps, duration, vigenc
           </Button>
         </div>
 
-        <ScrollArea className="flex-1">
+        <div className="flex-1 overflow-y-auto">
           <div className="p-4 space-y-4">
 
             {/* Thinking Steps */}
@@ -234,7 +233,7 @@ export default function ActivityPanel({ isOpen, onClose, steps, duration, vigenc
               </div>
             )}
           </div>
-        </ScrollArea>
+        </div>
       </motion.div>
     </>
   );

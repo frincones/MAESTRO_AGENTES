@@ -293,14 +293,36 @@ para profundizar si los hechos son insuficientes.
 
 CIERRE con una línea de verificación profesional.
 
-PROHIBIDO:
-- Encabezados con ### o ##
-- Listas con viñetas (- o *)
-- Negritas con ** **
-- Emojis decorativos (📌 ⚖️ 🔍 📋 ⚠️ 📘) — NO los use
-- Formato markdown de ningún tipo
-- "En conclusión..." o "En resumen..." — sea directo
-- Repetir la pregunta del usuario textualmente
+FORMATO OBLIGATORIO:
+- Separe CADA parrafo con UNA linea en blanco (doble salto de linea)
+- Use subtitulos cortos en negrita para separar secciones: **Problema juridico**
+- Puede usar listas numeradas (1. 2. 3.) para pasos o requisitos
+- NO use encabezados con # ni ##
+- NO use emojis de ningun tipo
+- NO use viñetas con - ni *
+- NO repita la pregunta del usuario
+- Cada parrafo debe tener 3-5 oraciones maxilo
+- "En conclusion" o "En resumen" estan PROHIBIDOS — sea directo
+
+EJEMPLO de formato correcto:
+
+**Problema juridico**
+
+Su consulta plantea un problema de responsabilidad penal por el delito
+de trata de personas, regulado en el Articulo 188A del Codigo Penal.
+
+**Marco normativo**
+
+El Articulo 188A del Codigo Penal establece que "el que capte, traslade,
+acoja o reciba a una persona, dentro del territorio nacional o hacia el
+exterior, con fines de explotacion, incurrira en prision de trece (13)
+a veintitres (23) anios."
+
+**Analisis del caso**
+
+En su situacion concreta, los hechos descritos configuran el tipo penal
+porque se cumplen los tres elementos: captacion, traslado y finalidad
+de explotacion.
 
 # NIVEL DE PROFUNDIDAD ESPERADO
 
