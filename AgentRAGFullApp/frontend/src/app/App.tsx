@@ -30,6 +30,7 @@ export interface Message {
   thinkingDuration?: number;
   vigencia?: VigenciaItem[];
   sourceRefs?: SourceRef[];
+  jurisprudencia?: Record<string, unknown>[];
 }
 
 function fmtTime(d: Date = new Date()): string {
@@ -175,6 +176,7 @@ export default function App() {
               vigencia: vig.length > 0 ? [...vig] : undefined,
               sources: srcs.length > 0 ? [...srcs] : undefined,
               sourceRefs: refs.length > 0 ? [...refs] : undefined,
+              jurisprudencia: juris.length > 0 ? [...juris] : undefined,
             } : m
           ));
         }
@@ -347,6 +349,7 @@ export default function App() {
         vigencia={activityMessage?.vigencia}
         sources={activityMessage?.sources}
         sourceRefs={activityMessage?.sourceRefs}
+        jurisprudencia={activityMessage?.jurisprudencia}
       />
 
       <Toaster position="top-center" />

@@ -624,23 +624,59 @@ class RAGAgent:
         # Phase 8: Post-response metadata
         full_response = sanitize_llm_response(full_response, allowed_documents=loaded_doc_titles)
 
-        # Vigencia as structured data
+        # Vigencia: check ALL norms mentioned in response + ingested this turn
+        import re as _re
+        all_vigencia = list(vigencia_results or [])
+        # Extract norms from LLM response and verify them too
+        checked_keys = set()
         if vigencia_results:
             for v in vigencia_results:
-                if v.encontrada:
-                    import json
-                    vdata = {"tipo": v.tipo, "numero": v.numero, "anio": v.anio,
-                             "estado": v.estado, "titulo": v.titulo}
-                    if v.derogaciones:
-                        d = v.derogaciones[0]
-                        vdata["derogada_por"] = f"{d.get('norma_tipo','')} {d.get('norma_numero','')} de {d.get('norma_anio','')}"
-                    yield E("vigencia", data=vdata)
+                checked_keys.add(f"{v.tipo}:{v.numero}:{v.anio}")
+        norm_patterns = [
+            (r"[Ll]ey\s+(\d+)\s+(?:de\s+)?(\d{4})", "LEY"),
+            (r"[Dd]ecreto\s+(\d+)\s+(?:de\s+)?(\d{4})", "DECRETO"),
+            (r"[Rr]esoluci[oó]n\s+(\d+)\s+(?:de\s+)?(\d{4})", "RESOLUCION"),
+        ]
+        for pattern, tipo in norm_patterns:
+            for match in _re.finditer(pattern, full_response):
+                key = f"{tipo}:{match.group(1)}:{match.group(2)}"
+                if key not in checked_keys:
+                    checked_keys.add(key)
+                    try:
+                        from api.legal import _vigencia_checker
+                        if _vigencia_checker:
+                            v = await _vigencia_checker.check(tipo, int(match.group(1)), int(match.group(2)))
+                            if v.encontrada:
+                                all_vigencia.append(v)
+                    except Exception:
+                        pass
 
-        # Jurisprudencia for sidebar
+        # Emit vigencia events
+        for v in all_vigencia:
+            if v.encontrada:
+                vdata = {"tipo": v.tipo, "numero": v.numero, "anio": v.anio,
+                         "estado": v.estado, "titulo": v.titulo}
+                if v.derogaciones:
+                    d = v.derogaciones[0]
+                    vdata["derogada_por"] = f"{d.get('norma_tipo','')} {d.get('norma_numero','')} de {d.get('norma_anio','')}"
+                yield E("vigencia", data=vdata)
+
+        # Jurisprudencia: from live search + extracted from LLM response
         import json
-        if juris_for_frontend:
-            for jf in juris_for_frontend:
-                yield E("jurisprudencia", data=jf)
+        all_juris = list(juris_for_frontend) if 'juris_for_frontend' in dir() else []
+        # Extract sentencia references from LLM response
+        sentencia_pattern = r"[Ss]entencia\s+([A-Za-z]+)[-\s](\d+)[\s/]+(?:de\s+)?(\d{4})"
+        for match in _re.finditer(sentencia_pattern, full_response):
+            tipo_s = match.group(1).upper()
+            num_s = match.group(2)
+            anio_s = match.group(3)
+            ref = {"titulo": f"Sentencia {tipo_s}-{num_s} de {anio_s}",
+                   "source": "citada en respuesta", "url": "",
+                   "preview": f"Corte Constitucional - {tipo_s}-{num_s}/{anio_s}"}
+            if not any(j.get("titulo") == ref["titulo"] for j in all_juris):
+                all_juris.append(ref)
+        for jf in all_juris:
+            yield E("jurisprudencia", data=jf)
 
         # Sources with URLs for sidebar
         if sources:
@@ -648,24 +684,42 @@ class RAGAgent:
 
         # Emit source references with real URLs for the activity panel
         source_refs = []
+        seen_titles = set()
+
+        def _add_ref(url, title, source, preview):
+            if title and title not in seen_titles and title != 'NULL':
+                seen_titles.add(title)
+                source_refs.append({"url": url or '', "title": title, "source": source, "preview": preview[:120]})
+
         # From live search results
         if live_results:
             for lr in live_results:
-                url = getattr(lr, 'url', None)
                 titulo = getattr(lr, 'titulo', '') or ''
-                source_name = getattr(lr, 'source', '') or ''
+                url = getattr(lr, 'url', '') or ''
+                src = getattr(lr, 'source', '') or ''
                 preview = getattr(lr, 'preview', '') or ''
-                if url or titulo:
-                    ref = {"url": url or '', "title": titulo, "source": source_name, "preview": preview[:120]}
-                    source_refs.append(ref)
-        # NOTE: Only include sources actually used in THIS turn, not all normas in graph
-        # From loaded documents
+                # Build URL for datos_gov results that have no URL
+                if not url and getattr(lr, 'numero', None) and getattr(lr, 'anio', None):
+                    tipo_l = (getattr(lr, 'tipo', '') or '').lower()
+                    num = getattr(lr, 'numero', '')
+                    anio = getattr(lr, 'anio', '')
+                    url = f"http://www.secretariasenado.gov.co/senado/basedoc/{tipo_l}_{num}_{anio}.html"
+                _add_ref(url, titulo or f"{getattr(lr,'tipo','')} {getattr(lr,'numero','')} de {getattr(lr,'anio','')}", src, preview)
+
+        # From norms cited in response (extract and build URLs)
+        for match in _re.finditer(r"[Ll]ey\s+(\d+)\s+(?:de\s+)?(\d{4})", full_response):
+            _add_ref(f"http://www.secretariasenado.gov.co/senado/basedoc/ley_{match.group(1)}_{match.group(2)}.html",
+                     f"Ley {match.group(1)} de {match.group(2)}", "secretariasenado.gov.co", "Texto oficial Senado")
+        for match in _re.finditer(r"[Dd]ecreto\s+(\d+)\s+(?:de\s+)?(\d{4})", full_response):
+            _add_ref(f"http://www.secretariasenado.gov.co/senado/basedoc/decreto_{match.group(1)}_{match.group(2)}.html",
+                     f"Decreto {match.group(1)} de {match.group(2)}", "secretariasenado.gov.co", "Texto oficial Senado")
+
+        # From loaded RAG documents
         for s in sources:
+            if 'datos_gov' in s or 'NULL' in s:
+                continue  # Skip generic datos.gov entries
             if 'senado' in s.lower() or 'codigo' in s.lower() or 'ley_' in s.lower():
-                ref = {"url": "http://www.secretariasenado.gov.co/senado/basedoc/",
-                       "title": s, "source": "secretariasenado.gov.co", "preview": "Texto oficial del Senado de la Republica"}
-                if not any(r['title'] == ref['title'] for r in source_refs):
-                    source_refs.append(ref)
+                _add_ref("http://www.secretariasenado.gov.co/senado/basedoc/", s, "secretariasenado.gov.co", "Texto oficial Senado")
             elif 'funcionpublica' in s.lower():
                 ref = {"url": "https://www.funcionpublica.gov.co/eva/gestornormativo/",
                        "title": s, "source": "funcionpublica.gov.co", "preview": "Gestor Normativo de Funcion Publica"}

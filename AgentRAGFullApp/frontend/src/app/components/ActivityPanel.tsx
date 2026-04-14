@@ -28,6 +28,7 @@ interface ActivityPanelProps {
   vigencia?: VigenciaItem[];
   sources?: string[];
   sourceRefs?: SourceRef[];
+  jurisprudencia?: Record<string, unknown>[];
 }
 
 function getStepIcon(step: ThinkingStep) {
@@ -39,7 +40,7 @@ function getStepIcon(step: ThinkingStep) {
   return <Check className="w-3.5 h-3.5 text-green-500" />;
 }
 
-export default function ActivityPanel({ isOpen, onClose, steps, duration, vigencia, sources, sourceRefs }: ActivityPanelProps) {
+export default function ActivityPanel({ isOpen, onClose, steps, duration, vigencia, sources, sourceRefs, jurisprudencia }: ActivityPanelProps) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['steps', 'vigencia']));
 
   if (!isOpen) return null;
@@ -151,6 +152,35 @@ export default function ActivityPanel({ isOpen, onClose, steps, duration, vigenc
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Jurisprudencia cited */}
+            {jurisprudencia && jurisprudencia.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-semibold text-foreground">Jurisprudencia citada</span>
+                  <span className="text-[10px] text-muted-foreground">{jurisprudencia.length}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {jurisprudencia.map((j, i) => (
+                    <div key={i} className="p-2 rounded-lg bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800">
+                      <div className="text-xs font-medium text-purple-700 dark:text-purple-400">
+                        {String(j.titulo || '')}
+                      </div>
+                      {j.source && (
+                        <div className="text-[10px] text-purple-600/70 dark:text-purple-400/70 mt-0.5">
+                          {String(j.source)}
+                        </div>
+                      )}
+                      {j.preview && (
+                        <div className="text-[10px] text-muted-foreground mt-0.5 line-clamp-2">
+                          {String(j.preview)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
