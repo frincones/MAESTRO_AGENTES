@@ -183,9 +183,15 @@ export default function App() {
             } else if (trimmed.startsWith('[DURATION] ')) {
               duration = parseInt(trimmed.replace('[DURATION] ', ''), 10);
 
-            } else if (contentStarted && trimmed) {
-              // Regular LLM token
-              acc += trimmed + '\n';
+            } else if (trimmed) {
+              // Regular text — either after [CONTENT] or chitchat (no protocol)
+              if (!contentStarted && !trimmed.startsWith('[')) {
+                // Chitchat or plain text — no protocol prefix, treat as content
+                contentStarted = true;
+              }
+              if (contentStarted) {
+                acc += trimmed + '\n';
+              }
             }
           }
 
