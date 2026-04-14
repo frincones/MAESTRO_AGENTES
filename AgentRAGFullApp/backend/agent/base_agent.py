@@ -90,6 +90,23 @@ class RAGAgent:
             session_id=session_id,
         )
 
+        # Step 3.5: Legal mode — if RAG didn't find good results,
+        # ask LLM what norm is needed and auto-ingest it
+        llm_ingested = []
+        if self._is_legal_mode():
+            has_good = retrieval_result.results and any(
+                r.best_score > 0.5 for r in retrieval_result.results[:3]
+            )
+            if not has_good:
+                llm_ingested = await self._identify_needed_norms_via_llm(message, retrieval_result)
+                if llm_ingested:
+                    self.invalidate_doc_cache()
+                    # Re-run retrieval with new docs
+                    retrieval_result = await self.retrieval.retrieve(
+                        query=retrieval_query, session_id=session_id,
+                    )
+                    logger.info(f"Re-retrieval after LLM-identified ingest: {llm_ingested}")
+
         # Always preserve the user's actual message for display/logging purposes
         retrieval_result.query.original_query = message
 
@@ -181,6 +198,7 @@ class RAGAgent:
             "loaded_documents": loaded_doc_titles,
             "vigencia_results": vigencia_results,
             "live_results": live_results,
+            "llm_ingested": llm_ingested,
         }
         return messages, meta
 
@@ -322,17 +340,23 @@ class RAGAgent:
         session_id = session_id or str(uuid.uuid4())
 
         # Legal mode: auto-ingest missing norms BEFORE building messages
+        all_ingested = []
         if self._is_legal_mode():
             ingested = await self._auto_ingest_missing_norms(message)
             if ingested:
-                # Stream status messages to user
-                normas_str = ", ".join(ingested)
-                status_msg = f"📥 **Descargando e indexando normativa:** {normas_str}\n\n⏳ Analizando documentos legales para dar una respuesta fundamentada...\n\n---\n\n"
-                yield status_msg
-                # Invalidate doc cache so retrieval sees new documents
+                all_ingested.extend(ingested)
                 self.invalidate_doc_cache()
 
         messages, meta = await self._build_messages(message, session_id)
+
+        # Check if _build_messages also ingested something (via LLM identification)
+        if meta.get("llm_ingested"):
+            all_ingested.extend(meta["llm_ingested"])
+
+        if all_ingested:
+            normas_str = ", ".join(all_ingested)
+            status_msg = f"📥 **Descargando e indexando normativa:** {normas_str}\n\n⏳ Analizando documentos legales para dar una respuesta fundamentada...\n\n---\n\n"
+            yield status_msg
 
         client = get_openai_client()
 
@@ -853,6 +877,87 @@ class RAGAgent:
                 logger.error(f"Auto-ingest replacement failed for {replacement_nombre}: {e}")
 
         return ingested
+
+    async def _identify_needed_norms_via_llm(self, message: str, retrieval_result) -> list[str]:
+        """Use LLM to identify which Colombian norms are needed to answer a query.
+        Returns list of norm names that were ingested."""
+        import re
+
+        # Check if retrieval found enough context
+        has_good_context = (
+            retrieval_result.results
+            and any(r.best_score > 0.5 for r in retrieval_result.results[:3])
+        )
+        if has_good_context:
+            return []
+
+        try:
+            client = get_openai_client()
+            response = await client.chat.completions.create(
+                model=self.config.agent.utility_model,
+                temperature=0,
+                max_tokens=200,
+                messages=[
+                    {"role": "system", "content": (
+                        "Eres un experto en derecho colombiano. El usuario hizo una consulta legal. "
+                        "Identifica la norma colombiana principal que regula ese tema. "
+                        "Responde SOLO con el formato: TIPO NUMERO AÑO (ej: LEY 675 2001). "
+                        "Si identificas múltiples normas, pon una por línea. "
+                        "Si no sabes, responde: NONE. "
+                        "No expliques nada más."
+                    )},
+                    {"role": "user", "content": message},
+                ],
+            )
+
+            answer = response.choices[0].message.content.strip()
+            logger.info(f"LLM norm identification: {answer}")
+
+            if "NONE" in answer.upper():
+                return []
+
+            # Parse response
+            ingested = []
+            pattern = r"(LEY|DECRETO|RESOLUCION|CODIGO)\s+(\d+)\s+(?:de\s+)?(\d{4})"
+            for match in re.finditer(pattern, answer, re.IGNORECASE):
+                tipo = match.group(1).upper()
+                numero = int(match.group(2))
+                anio = int(match.group(3))
+                nombre = f"{tipo} {numero} de {anio}"
+
+                # Check if already loaded
+                loaded = await self._get_loaded_doc_titles()
+                already = any(str(numero) in t and str(anio) in t for t in [x.lower() for x in loaded])
+                if already:
+                    continue
+
+                # Auto-ingest
+                try:
+                    from api.legal import _source_router, _storage
+                    if not _source_router or not _storage:
+                        continue
+
+                    norm_data = await _source_router.fetch_norm(tipo, numero, anio)
+                    if norm_data and norm_data.get("texto_completo"):
+                        from ingestion.pipeline import IngestionPipeline
+                        from config.schema import load_config
+                        config = load_config()
+                        pipeline = IngestionPipeline(config, _storage)
+                        await pipeline.ingest_text(
+                            text=norm_data["texto_completo"],
+                            title=norm_data.get("titulo", nombre),
+                            source=norm_data.get("fuente_url", "legal_source"),
+                            doc_type="legal_norm",
+                        )
+                        ingested.append(nombre)
+                        logger.info(f"LLM-identified norm ingested: {nombre}")
+                except Exception as e:
+                    logger.warning(f"Failed to ingest LLM-identified norm {nombre}: {e}")
+
+            return ingested
+        except Exception as e:
+            logger.warning(f"LLM norm identification failed: {e}")
+            return []
 
     async def _auto_ingest_live_results(self, live_results: list) -> bool:
         """Auto-ingest norms found in live sources that aren't already in the RAG.
