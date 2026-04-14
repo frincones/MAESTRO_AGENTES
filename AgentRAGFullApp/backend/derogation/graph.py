@@ -80,6 +80,15 @@ class DerogationGraph:
             )
             return dict(row) if row else None
 
+    async def norma_exists(self, tipo: str, numero: int, anio: int) -> bool:
+        """Fast check if a norm exists in the graph (indexed lookup)."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM normas WHERE tipo = $1 AND numero = $2 AND anio = $3",
+                tipo.upper(), numero, anio
+            )
+            return row is not None
+
     async def get_norma_by_id(self, norma_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM normas WHERE id = $1::uuid", norma_id)

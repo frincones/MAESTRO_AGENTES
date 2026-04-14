@@ -53,13 +53,13 @@ export function MessageInput({ onSend, isLoading, onStop, isEmpty }: MessageInpu
 
   if (isEmpty) {
     return (
-      <div className="flex-1 flex items-center justify-center px-4 pb-20">
+      <div className="flex-1 flex items-center justify-center px-3 sm:px-4 pb-10 sm:pb-20">
         <div className="w-full max-w-2xl">
           <motion.h1
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
-            className="text-3xl md:text-4xl font-normal text-center mb-8 text-foreground"
+            className="text-xl sm:text-3xl md:text-4xl font-normal text-center mb-4 sm:mb-8 text-foreground"
           >
             ¿En qué puedo ayudarte?
           </motion.h1>
@@ -94,8 +94,8 @@ export function MessageInput({ onSend, isLoading, onStop, isEmpty }: MessageInpu
   }
 
   return (
-    <div className="border-t border-border/40 bg-background/95 backdrop-blur-sm">
-      <div className="max-w-3xl mx-auto px-4 py-3">
+    <div className="border-t border-border/40 bg-background/95 backdrop-blur-sm safe-area-bottom">
+      <div className="max-w-3xl mx-auto px-3 sm:px-4 py-2 sm:py-3">
         <div className="relative">
           <div className="flex items-end gap-2 bg-background border border-border/60 rounded-3xl p-2 focus-within:shadow-sm transition-all">
             <Textarea

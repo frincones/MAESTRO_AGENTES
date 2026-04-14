@@ -334,36 +334,140 @@ class RAGAgent:
         message: str,
         session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
-        """Process a user message and stream the response."""
+        """Process a user message and stream the response with activity protocol.
+
+        Yields prefixed chunks:
+          [STATUS] step description   — agent activity (shown in thinking timeline)
+          [INGEST] norm name          — downloading/indexing a norm
+          [CONTENT] text              — first content token (marks end of thinking)
+          [VIGENCIA] {...json}        — vigencia verification result
+          [SOURCES] [...json]         — source citations
+          [DURATION] Ns               — total thinking time
+          (unprefixed)                — subsequent LLM tokens
+        """
         from utils.usage_tracker import tracker
 
         session_id = session_id or str(uuid.uuid4())
+        start_time = time.time()
 
-        # Legal mode: auto-ingest missing norms BEFORE building messages
-        all_ingested = []
-        if self._is_legal_mode():
+        yield "[STATUS] Analizando consulta...\n"
+
+        # Phase 1: Auto-ingest norms mentioned by number in the query
+        is_legal = self._is_legal_mode()
+        if is_legal:
+            yield "[STATUS] Revisando normas mencionadas...\n"
             ingested = await self._auto_ingest_missing_norms(message)
             if ingested:
-                all_ingested.extend(ingested)
+                for n in ingested:
+                    yield f"[INGEST] {n}\n"
                 self.invalidate_doc_cache()
 
-        messages, meta = await self._build_messages(message, session_id)
+        # Phase 2: Load history
+        yield "[STATUS] Cargando contexto de conversación...\n"
+        history: list = []
+        try:
+            history = await self.storage.get_session_messages(session_id)
+        except Exception as e:
+            logger.debug("Could not load history: %s", e)
 
-        # Check if _build_messages also ingested something (via LLM identification)
-        if meta.get("llm_ingested"):
-            all_ingested.extend(meta["llm_ingested"])
+        retrieval_query = self._build_retrieval_query(message, history)
 
-        if all_ingested:
-            normas_str = ", ".join(all_ingested)
-            status_msg = f"📥 **Descargando e indexando normativa:** {normas_str}\n\n⏳ Analizando documentos legales para dar una respuesta fundamentada...\n\n---\n\n"
-            yield status_msg
+        # Phase 3: Retrieval
+        yield "[STATUS] Buscando en documentos legales...\n"
+        retrieval_result = await self.retrieval.retrieve(
+            query=retrieval_query, session_id=session_id,
+        )
+        retrieval_result.query.original_query = message
+
+        # Phase 4: Legal — if no good results, LLM identifies needed norms
+        llm_ingested = []
+        if is_legal:
+            has_good = retrieval_result.results and any(
+                r.best_score > 0.5 for r in retrieval_result.results[:3]
+            )
+            if not has_good:
+                yield "[STATUS] Investigando qué normativa aplica...\n"
+                llm_ingested = await self._identify_needed_norms_via_llm(message, retrieval_result)
+                if llm_ingested:
+                    for n in llm_ingested:
+                        yield f"[INGEST] {n}\n"
+                    self.invalidate_doc_cache()
+                    yield "[STATUS] Buscando en documentos recién indexados...\n"
+                    retrieval_result = await self.retrieval.retrieve(
+                        query=retrieval_query, session_id=session_id,
+                    )
+                    retrieval_result.query.original_query = message
+
+        # Phase 5: Legal enrichment — live sources + vigencia
+        live_results = None
+        vigencia_results = None
+        if is_legal:
+            yield "[STATUS] Consultando fuentes legales oficiales...\n"
+            live_results, vigencia_results = await self._enrich_with_legal_sources(
+                retrieval_query, retrieval_result
+            )
+
+            # Auto-ingest from live results if needed
+            if live_results:
+                did_ingest = await self._auto_ingest_live_results(live_results)
+                if did_ingest:
+                    self.invalidate_doc_cache()
+                    yield "[STATUS] Re-buscando con nuevas normas descargadas...\n"
+                    retrieval_result = await self.retrieval.retrieve(
+                        query=retrieval_query, session_id=session_id,
+                    )
+                    retrieval_result.query.original_query = message
+                    _, vigencia_results = await self._enrich_with_legal_sources(
+                        retrieval_query, retrieval_result
+                    )
+
+            if vigencia_results:
+                yield "[STATUS] Verificando vigencia de normas...\n"
+
+        # Phase 6: Build context & messages
+        sources = get_sources(retrieval_result)
+        confidence = get_confidence(retrieval_result)
+        intent = retrieval_result.query.intent.value if retrieval_result.query.intent else "knowledge"
+
+        if is_legal and (live_results or vigencia_results):
+            context = build_legal_context(retrieval_result, live_results, vigencia_results)
+            if live_results:
+                for lr in live_results:
+                    name = f"{getattr(lr, 'titulo', '')} ({getattr(lr, 'source', '')})"
+                    if name.strip(" ()"):
+                        sources.append(name)
+        else:
+            context = build_context(retrieval_result)
+
+        loaded_doc_titles = await self._get_loaded_doc_titles()
+
+        system_prompt = build_system_prompt(
+            agent_name=self.config.agent.name,
+            agent_role=self.config.agent.role,
+            context=context, intent=intent, sources=sources,
+            confidence=confidence,
+            was_refined=retrieval_result.was_refined,
+            refined_query=retrieval_result.refined_query,
+            custom_template=self.config.agent.system_prompt_template,
+            loaded_documents=loaded_doc_titles,
+        )
+
+        llm_messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if history:
+            for h in history[-(10 * 2):]:
+                llm_messages.append({"role": h["role"], "content": h["content"]})
+        llm_messages.append({"role": "user", "content": message})
+
+        # Phase 7: Stream LLM response
+        yield "[STATUS] Generando respuesta fundamentada...\n"
 
         client = get_openai_client()
-
         full_response = ""
+        first_token = True
+
         stream = await client.chat.completions.create(
             model=self.config.agent.primary_model,
-            messages=messages,
+            messages=llm_messages,
             temperature=self.config.agent.temperature,
             max_tokens=self.config.agent.max_tokens,
             stream=True,
@@ -371,7 +475,6 @@ class RAGAgent:
         )
 
         async for chunk in stream:
-            # Final chunk with usage stats has no choices
             if chunk.usage:
                 tracker.record_chat(
                     model=self.config.agent.primary_model,
@@ -381,47 +484,38 @@ class RAGAgent:
                     session_id=session_id,
                 )
                 continue
-
             if chunk.choices and chunk.choices[0].delta.content:
                 text = chunk.choices[0].delta.content
+                if first_token:
+                    yield f"[CONTENT]{text}"
+                    first_token = False
+                else:
+                    yield text
                 full_response += text
-                yield text
 
-        # Sanitize the full response (strip hallucinated norm references)
-        full_response = sanitize_llm_response(
-            full_response, allowed_documents=meta.get("loaded_documents")
-        )
+        # Phase 8: Post-response metadata
+        full_response = sanitize_llm_response(full_response, allowed_documents=loaded_doc_titles)
 
-        # Append vigencia verification block (legal mode)
-        vigencia_footer = ""
-        if meta.get("vigencia_results"):
-            vigencia_lines = ["\n\n---\n**Vigencia Verificada:**"]
-            for v in meta["vigencia_results"]:
-                if v.estado == "VIGENTE":
-                    vigencia_lines.append(f"- ✅ {v.tipo} {v.numero or ''} de {v.anio or ''} — VIGENTE")
-                elif v.estado == "DEROGADA":
-                    derog_info = ""
+        # Vigencia as structured data
+        if vigencia_results:
+            for v in vigencia_results:
+                if v.encontrada:
+                    import json
+                    vdata = {"tipo": v.tipo, "numero": v.numero, "anio": v.anio,
+                             "estado": v.estado, "titulo": v.titulo}
                     if v.derogaciones:
                         d = v.derogaciones[0]
-                        derog_info = f" por {d.get('norma_tipo', '')} {d.get('norma_numero', '')} de {d.get('norma_anio', '')}"
-                    vigencia_lines.append(f"- ❌ {v.tipo} {v.numero or ''} de {v.anio or ''} — DEROGADA{derog_info}")
-                elif v.estado == "MODIFICADA":
-                    vigencia_lines.append(f"- ⚠️ {v.tipo} {v.numero or ''} de {v.anio or ''} — MODIFICADA")
-                elif not v.encontrada:
-                    pass  # Skip not-found norms in footer
-                else:
-                    vigencia_lines.append(f"- {v.tipo} {v.numero or ''} de {v.anio or ''} — {v.estado}")
-            if len(vigencia_lines) > 1:
-                vigencia_footer = "\n".join(vigencia_lines)
-                yield vigencia_footer
-                full_response += vigencia_footer
+                        vdata["derogada_por"] = f"{d.get('norma_tipo','')} {d.get('norma_numero','')} de {d.get('norma_anio','')}"
+                    yield f"\n[VIGENCIA] {json.dumps(vdata, ensure_ascii=False)}\n"
 
-        # Append sources at the end
-        sources = meta["sources"]
+        # Sources
         if sources:
-            source_footer = "\n\n---\n**Fuentes:**\n" + "\n".join(f"- {s}" for s in sources)
-            yield source_footer
-            full_response += source_footer
+            import json
+            yield f"\n[SOURCES] {json.dumps(sources, ensure_ascii=False)}\n"
+
+        # Duration
+        duration = int(time.time() - start_time)
+        yield f"\n[DURATION] {duration}s\n"
 
         # ALWAYS persist chat history (lightweight) for in-session context
         await self._save_chat_history(

@@ -1,67 +1,65 @@
-import { ScrollArea } from './ui/scroll-area';
-import { ChatMessage } from './ChatMessage';
-import { motion } from 'motion/react';
-import { Circle } from 'lucide-react';
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp?: string;
-}
+import { useEffect, useRef, useState } from 'react';
+import ChatMessage from './ChatMessage';
+import AgentThinking from './AgentThinking';
+import type { ThinkingStep } from './AgentThinking';
+import type { Message } from '../App';
 
 interface ChatAreaProps {
   messages: Message[];
   isLoading?: boolean;
+  thinkingSteps?: ThinkingStep[];
+  onOpenActivity?: (messageId: string) => void;
 }
 
-export function ChatArea({ messages, isLoading }: ChatAreaProps) {
-  // Empty state is now handled by MessageInput component
-  if (messages.length === 0) {
-    return null;
-  }
+export function ChatArea({ messages, isLoading, thinkingSteps = [], onOpenActivity }: ChatAreaProps) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [userScrolled, setUserScrolled] = useState(false);
+
+  // Auto-scroll when new content arrives (unless user scrolled up)
+  useEffect(() => {
+    if (!userScrolled) {
+      endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, thinkingSteps, isLoading, userScrolled]);
+
+  // Detect manual scroll up
+  const handleScroll = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    setUserScrolled(!atBottom);
+  };
+
+  if (messages.length === 0 && !isLoading) return null;
 
   return (
-    <ScrollArea className="flex-1">
-      <div className="max-w-3xl mx-auto px-4 py-4">
-        {messages.map((message) => (
-          <ChatMessage
-            key={message.id}
-            role={message.role}
-            content={message.content}
-            timestamp={message.timestamp}
-          />
-        ))}
+    <div className="flex-1 overflow-hidden">
+      <div
+        ref={containerRef}
+        className="h-full overflow-y-auto px-3 sm:px-4 md:px-6"
+        onScroll={handleScroll}
+      >
+        <div className="max-w-3xl mx-auto py-3 sm:py-4 md:py-6 space-y-3 sm:space-y-4">
+          {messages.map((msg) => (
+            <ChatMessage
+              key={msg.id}
+              message={msg}
+              onOpenActivity={onOpenActivity}
+            />
+          ))}
 
-        {/* Loading indicator */}
-        {isLoading && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="py-5 flex items-start gap-3"
-          >
-            <div className="flex-shrink-0 w-6 h-6 rounded-full bg-foreground flex items-center justify-center">
-              <Circle className="w-3.5 h-3.5 text-background fill-current" />
-            </div>
-            <div className="flex-1 space-y-2">
-              <div className="flex gap-1">
-                {[0, 1, 2].map((i) => (
-                  <motion.div
-                    key={i}
-                    animate={{ opacity: [0.3, 1, 0.3] }}
-                    transition={{
-                      repeat: Infinity,
-                      duration: 1.5,
-                      delay: i * 0.2,
-                    }}
-                    className="w-1.5 h-1.5 rounded-full bg-muted-foreground"
-                  />
-                ))}
-              </div>
-            </div>
-          </motion.div>
-        )}
+          {/* Agent thinking timeline — replaces old 3-dot animation */}
+          {isLoading && (
+            <AgentThinking
+              steps={thinkingSteps}
+              isThinking={true}
+            />
+          )}
+
+          <div ref={endRef} />
+        </div>
       </div>
-    </ScrollArea>
+    </div>
   );
 }
