@@ -795,6 +795,7 @@ class RAGAgent:
     ) -> AsyncGenerator[str, None]:
         """Streaming variant of chat_chitchat. No RAG pipeline."""
         from utils.usage_tracker import tracker
+        E = self._evt
 
         session_id = session_id or str(uuid.uuid4())
         messages = await self._build_chitchat_messages(message, session_id)
