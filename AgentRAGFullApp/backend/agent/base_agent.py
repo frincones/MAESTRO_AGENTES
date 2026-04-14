@@ -653,21 +653,7 @@ class RAGAgent:
                 if url or titulo:
                     ref = {"url": url or '', "title": titulo, "source": source_name, "preview": preview[:120]}
                     source_refs.append(ref)
-        # From ingested norms (they have fuente_url in the graph)
-        try:
-            from api.legal import _derogation_graph
-            if _derogation_graph:
-                all_normas = await _derogation_graph.list_normas(limit=30)
-                for n in all_normas:
-                    if n.get('fuente_url'):
-                        nombre = f"{n.get('tipo','')} {n.get('numero','')} de {n.get('anio','')}"
-                        ref = {"url": n['fuente_url'], "title": nombre,
-                               "source": "Fuente oficial", "preview": n.get('titulo', '')[:120]}
-                        # Avoid duplicates
-                        if not any(r['url'] == ref['url'] for r in source_refs):
-                            source_refs.append(ref)
-        except Exception:
-            pass
+        # NOTE: Only include sources actually used in THIS turn, not all normas in graph
         # From loaded documents
         for s in sources:
             if 'senado' in s.lower() or 'codigo' in s.lower() or 'ley_' in s.lower():
