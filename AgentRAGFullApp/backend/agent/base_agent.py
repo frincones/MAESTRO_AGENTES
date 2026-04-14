@@ -329,28 +329,37 @@ class RAGAgent:
             "session_id": session_id,
         }
 
+    @staticmethod
+    def _evt(etype: str, **kwargs) -> str:
+        """Emit a NDJSON event line."""
+        import json as _json
+        return _json.dumps({"type": etype, **kwargs}, ensure_ascii=False) + "\n"
+
     async def chat_stream(
         self,
         message: str,
         session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
-        """Process a user message and stream the response with activity protocol.
+        """Stream response as NDJSON (one JSON object per line).
 
-        Yields prefixed chunks:
-          [STATUS] step description   — agent activity (shown in thinking timeline)
-          [INGEST] norm name          — downloading/indexing a norm
-          [CONTENT] text              — first content token (marks end of thinking)
-          [VIGENCIA] {...json}        — vigencia verification result
-          [SOURCES] [...json]         — source citations
-          [DURATION] Ns               — total thinking time
-          (unprefixed)                — subsequent LLM tokens
+        Event types:
+          {"type":"status","text":"..."}       — thinking step
+          {"type":"ingest","norm":"..."}       — downloading norm
+          {"type":"token","text":"..."}        — LLM content token
+          {"type":"vigencia","data":{...}}     — vigencia check
+          {"type":"jurisprudencia","data":{...}} — sentencia found
+          {"type":"sources","data":[...]}      — sources used THIS turn
+          {"type":"sourcerefs","data":[...]}   — source cards with URLs
+          {"type":"casestate","data":{...}}    — accumulated case state
+          {"type":"done","duration":N}         — stream complete
         """
         from utils.usage_tracker import tracker
 
         session_id = session_id or str(uuid.uuid4())
         start_time = time.time()
+        E = self._evt
 
-        yield "[STATUS] Analizando consulta...\n"
+        yield E("status", text="Analizando consulta...")
 
         # Phase 0: Load Case State (accumulated context across all turns)
         from agent.case_state import CaseState
@@ -366,15 +375,15 @@ class RAGAgent:
         # Phase 1: Auto-ingest norms mentioned by number in the query
         is_legal = self._is_legal_mode()
         if is_legal:
-            yield "[STATUS] Revisando normas mencionadas...\n"
+            yield E("status", text="Revisando normas mencionadas...")
             ingested = await self._auto_ingest_missing_norms(message)
             if ingested:
                 for n in ingested:
-                    yield f"[INGEST] {n}\n"
+                    yield E("ingest", norm=f"{n}\n")
                 self.invalidate_doc_cache()
 
         # Phase 2: Load history
-        yield "[STATUS] Cargando contexto de conversacion...\n"
+        yield E("status", text="Cargando contexto de conversacion...")
         history: list = []
         try:
             history = await self.storage.get_session_messages(session_id)
@@ -384,7 +393,7 @@ class RAGAgent:
         retrieval_query = self._build_retrieval_query(message, history)
 
         # Phase 3: Retrieval
-        yield "[STATUS] Buscando en documentos legales...\n"
+        yield E("status", text="Buscando en documentos legales...")
         retrieval_result = await self.retrieval.retrieve(
             query=retrieval_query, session_id=session_id,
         )
@@ -398,13 +407,13 @@ class RAGAgent:
             )
             # ALWAYS investigate — even with some results, there might be
             # more specific norms needed for a complete answer
-            yield "[STATUS] Investigando normativa aplicable...\n"
+            yield E("status", text="Investigando normativa aplicable...")
             llm_ingested = await self._identify_needed_norms_via_llm(message, retrieval_result)
             if llm_ingested:
                 for n in llm_ingested:
-                    yield f"[INGEST] {n}\n"
+                    yield E("ingest", norm=f"{n}\n")
                 self.invalidate_doc_cache()
-                yield "[STATUS] Buscando en documentos recién indexados...\n"
+                yield E("status", text="Buscando en documentos recien indexados...")
                 retrieval_result = await self.retrieval.retrieve(
                     query=retrieval_query, session_id=session_id,
                 )
@@ -414,7 +423,7 @@ class RAGAgent:
         live_results = None
         vigencia_results = None
         if is_legal:
-            yield "[STATUS] Consultando fuentes legales oficiales...\n"
+            yield E("status", text="Consultando fuentes legales oficiales...")
             live_results, vigencia_results = await self._enrich_with_legal_sources(
                 retrieval_query, retrieval_result
             )
@@ -424,7 +433,7 @@ class RAGAgent:
                 did_ingest = await self._auto_ingest_live_results(live_results)
                 if did_ingest:
                     self.invalidate_doc_cache()
-                    yield "[STATUS] Re-buscando con nuevas normas descargadas...\n"
+                    yield E("status", text="Re-buscando con nuevas normas descargadas...")
                     retrieval_result = await self.retrieval.retrieve(
                         query=retrieval_query, session_id=session_id,
                     )
@@ -434,10 +443,10 @@ class RAGAgent:
                     )
 
             if vigencia_results:
-                yield "[STATUS] Verificando vigencia de normas...\n"
+                yield E("status", text="Verificando vigencia de normas...")
 
             # Phase 5.5: Search + download + ingest jurisprudence
-            yield "[STATUS] Buscando jurisprudencia relevante...\n"
+            yield E("status", text="Buscando jurisprudencia relevante...")
             juris_context = ""
             juris_for_frontend = []
             try:
@@ -454,7 +463,7 @@ class RAGAgent:
                     )
 
                     if juris_results:
-                        yield f"[STATUS] {len(juris_results)} sentencias encontradas, descargando...\n"
+                        yield E("status", text=f"{len(juris_results)} sentencias encontradas, descargando...")
 
                         # Download full text and ingest each sentencia
                         juris_context = "\n\nJURISPRUDENCIA RELEVANTE:\n"
@@ -482,7 +491,7 @@ class RAGAgent:
                                         if sent_data and sent_data.get('texto_completo'):
                                             texto = sent_data['texto_completo'][:3000]
                                             juris_context += f"Texto: {texto}\n"
-                                            yield f"[INGEST] Sentencia {titulo}\n"
+                                            yield E("ingest", norm=f"Sentencia {titulo}\n")
 
                                             # Save to jurisprudencia table
                                             if _derogation_graph:
@@ -526,7 +535,7 @@ class RAGAgent:
                         # Re-run retrieval if we ingested sentencias
                         if any("[INGEST]" in str(j) for j in juris_for_frontend):
                             self.invalidate_doc_cache()
-                            yield "[STATUS] Re-buscando con jurisprudencia indexada...\n"
+                            yield E("status", text="Re-buscando con jurisprudencia indexada...")
                             retrieval_result = await self.retrieval.retrieve(
                                 query=retrieval_query, session_id=session_id,
                             )
@@ -582,7 +591,7 @@ class RAGAgent:
         llm_messages.append({"role": "user", "content": message})
 
         # Phase 7: Stream LLM response
-        yield "[STATUS] Generando respuesta fundamentada...\n"
+        yield E("status", text="Generando respuesta fundamentada...")
 
         client = get_openai_client()
         full_response = ""
@@ -609,11 +618,7 @@ class RAGAgent:
                 continue
             if chunk.choices and chunk.choices[0].delta.content:
                 text = chunk.choices[0].delta.content
-                if first_token:
-                    yield f"[CONTENT]{text}"
-                    first_token = False
-                else:
-                    yield text
+                yield E("token", text=text)
                 full_response += text
 
         # Phase 8: Post-response metadata
@@ -819,7 +824,7 @@ class RAGAgent:
             if chunk.choices and chunk.choices[0].delta.content:
                 text = chunk.choices[0].delta.content
                 full_response += text
-                yield text
+                yield E("token", text=text)
 
         await self._save_chat_history(
             session_id=session_id,

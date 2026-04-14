@@ -99,68 +99,70 @@ export default function App() {
 
       try {
         let acc = '';
-        let contentStarted = false;
-        let stepCounter = 0;
-        const collectedSteps: ThinkingStep[] = [];
-        const collectedVigencia: VigenciaItem[] = [];
-        const collectedSources: string[] = [];
-        const collectedSourceRefs: SourceRef[] = [];
-        let duration: number | undefined;
+        let sc = 0;
+        const steps: ThinkingStep[] = [];
+        const vig: VigenciaItem[] = [];
+        const srcs: string[] = [];
+        const refs: SourceRef[] = [];
+        const juris: Record<string, unknown>[] = [];
+        let dur: number | undefined;
+        let buf = '';
 
-        const processLine = (line: string) => {
-          const t = line.trimEnd();  // Keep leading spaces, trim trailing only
-
-          // Empty line = paragraph break (preserve for formatting)
-          if (t === '' && contentStarted) {
-            acc += '\n';
-            return;
-          }
-          if (t === '') return;
-
-          if (t.startsWith('[STATUS] ')) {
-            if (collectedSteps.length > 0) collectedSteps[collectedSteps.length - 1].status = 'completed';
-            collectedSteps.push({ id: `s-${stepCounter++}`, text: t.slice(9).trim(), status: 'active', type: 'status', timestamp: Date.now() });
-            setThinkingSteps([...collectedSteps]);
-          } else if (t.startsWith('[INGEST] ')) {
-            collectedSteps.push({ id: `i-${stepCounter++}`, text: t.slice(9).trim(), status: 'completed', type: 'ingest', timestamp: Date.now() });
-            setThinkingSteps([...collectedSteps]);
-          } else if (t.startsWith('[CONTENT]')) {
-            contentStarted = true;
-            collectedSteps.forEach(s => s.status = 'completed');
-            setThinkingSteps([...collectedSteps]);
-            const text = t.slice(9);
-            if (text) acc += text;
-          } else if (t.startsWith('[VIGENCIA] ')) {
-            try { collectedVigencia.push(JSON.parse(t.slice(11))); } catch {}
-          } else if (t.startsWith('[SOURCES] ')) {
-            try { collectedSources.push(...JSON.parse(t.slice(10))); } catch {}
-          } else if (t.startsWith('[SOURCEREFS] ')) {
-            try { collectedSourceRefs.push(...JSON.parse(t.slice(13))); } catch {}
-          } else if (t.startsWith('[CASESTATE] ')) {
-            try { setCaseState(JSON.parse(t.slice(12))); } catch {}
-          } else if (t.startsWith('[DURATION] ')) {
-            duration = parseInt(t.slice(11), 10);
-          } else if (!t.startsWith('[')) {
-            contentStarted = true;
-            acc += t + '\n';
-          }
-        };
-
-        let pending = '';
-
-        for await (const rawChunk of sendChatStream({
+        for await (const chunk of sendChatStream({
           message: content, session_id: sessionId, stream: true,
         })) {
           if (aborted) break;
+          buf += chunk;
 
-          pending += rawChunk;
+          // Split NDJSON lines
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
 
-          // Process complete lines
-          if (pending.includes('\n')) {
-            const parts = pending.split('\n');
-            pending = parts.pop() || '';
-            for (const part of parts) {
-              processLine(part);
+          for (const line of lines) {
+            const t = line.trim();
+            if (!t) continue;
+
+            // Try JSON parse (NDJSON protocol)
+            try {
+              const evt = JSON.parse(t);
+              switch (evt.type) {
+                case 'status':
+                  if (steps.length > 0) steps[steps.length - 1].status = 'completed';
+                  steps.push({ id: `s-${sc++}`, text: evt.text, status: 'active', type: 'status', timestamp: Date.now() });
+                  setThinkingSteps([...steps]);
+                  break;
+                case 'ingest':
+                  steps.push({ id: `i-${sc++}`, text: evt.norm, status: 'completed', type: 'ingest', timestamp: Date.now() });
+                  setThinkingSteps([...steps]);
+                  break;
+                case 'token':
+                  acc += evt.text;
+                  break;
+                case 'vigencia':
+                  vig.push(evt.data);
+                  break;
+                case 'jurisprudencia':
+                  juris.push(evt.data);
+                  break;
+                case 'sources':
+                  srcs.push(...evt.data);
+                  break;
+                case 'sourcerefs':
+                  refs.push(...evt.data);
+                  break;
+                case 'casestate':
+                  setCaseState(evt.data);
+                  break;
+                case 'done':
+                  dur = evt.duration;
+                  steps.forEach(s => s.status = 'completed');
+                  setThinkingSteps([...steps]);
+                  break;
+              }
+              continue;
+            } catch {
+              // Not JSON — treat as plain text (chitchat fallback)
+              acc += t;
             }
           }
 
@@ -168,29 +170,36 @@ export default function App() {
           setMessages(prev => prev.map(m =>
             m.id === assistantId ? {
               ...m, content: acc,
-              thinkingSteps: [...collectedSteps],
-              thinkingDuration: duration,
-              vigencia: collectedVigencia.length > 0 ? [...collectedVigencia] : undefined,
-              sources: collectedSources.length > 0 ? [...collectedSources] : undefined,
-              sourceRefs: collectedSourceRefs.length > 0 ? [...collectedSourceRefs] : undefined,
+              thinkingSteps: [...steps],
+              thinkingDuration: dur,
+              vigencia: vig.length > 0 ? [...vig] : undefined,
+              sources: srcs.length > 0 ? [...srcs] : undefined,
+              sourceRefs: refs.length > 0 ? [...refs] : undefined,
             } : m
           ));
         }
 
-        // Process any remaining pending text
-        if (pending.trim()) {
-          processLine(pending);
+        // Process remaining buffer
+        if (buf.trim()) {
+          try {
+            const evt = JSON.parse(buf.trim());
+            if (evt.type === 'token') acc += evt.text;
+            else if (evt.type === 'done') dur = evt.duration;
+          } catch {
+            acc += buf.trim();
+          }
         }
 
         // Final update
-        collectedSteps.forEach(s => s.status = 'completed');
+        steps.forEach(s => s.status = 'completed');
         setMessages(prev => prev.map(m =>
           m.id === assistantId ? {
             ...m, content: acc.trim(),
-            thinkingSteps: [...collectedSteps],
-            thinkingDuration: duration,
-            vigencia: collectedVigencia.length > 0 ? [...collectedVigencia] : undefined,
-            sources: collectedSources.length > 0 ? [...collectedSources] : undefined,
+            thinkingSteps: [...steps],
+            thinkingDuration: dur,
+            vigencia: vig.length > 0 ? [...vig] : undefined,
+            sources: srcs.length > 0 ? [...srcs] : undefined,
+            sourceRefs: refs.length > 0 ? [...refs] : undefined,
           } : m
         ));
         setThinkingSteps([]);

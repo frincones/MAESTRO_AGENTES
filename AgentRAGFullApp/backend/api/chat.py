@@ -192,7 +192,7 @@ async def chat(request: ChatRequest):
 
         return StreamingResponse(
             stream_generator(),
-            media_type="text/plain",
+            media_type="application/x-ndjson",
             headers={
                 "X-Session-Id": session_id,
                 "X-Intent": "chitchat" if chitchat else "knowledge",

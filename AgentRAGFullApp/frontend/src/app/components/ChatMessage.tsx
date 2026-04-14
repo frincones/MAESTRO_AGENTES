@@ -2,6 +2,8 @@ import { User, Copy, ThumbsUp, ThumbsDown, RotateCcw, Circle, Clock } from 'luci
 import { Button } from './ui/button';
 import { motion } from 'motion/react';
 import { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Message } from '../App';
 
 interface ChatMessageProps {
@@ -67,53 +69,27 @@ export default function ChatMessage({ message, onOpenActivity }: ChatMessageProp
             </div>
           )}
 
-          {/* Message text — clean prose rendering */}
+          {/* Message text — react-markdown rendering */}
           {content && (
-            <div className="text-[13px] sm:text-sm text-foreground/90 leading-relaxed space-y-3">
-              {content.split(/\n/).map((line, i) => {
-                const trimmed = line.trim();
-                if (!trimmed || trimmed === '---') return null;
-
-                // Clean emojis
-                const clean = trimmed.replace(/📌|⚖️|🔍|📋|⚠️|📘/g, '').trim();
-                if (!clean) return null;
-
-                // ### Header or ## Header -> bold subtitle with line
-                if (/^#{1,3}\s/.test(clean)) {
-                  const title = clean.replace(/^#{1,3}\s*/, '').replace(/\*\*/g, '');
-                  return (
-                    <div key={i} className="mt-4 mb-1 first:mt-0">
-                      <div className="border-t border-border/30 pt-3" />
-                      <h3 className="text-sm sm:text-base font-semibold text-foreground">{title}</h3>
-                    </div>
-                  );
-                }
-
-                // **Bold line** -> subtitle
-                const boldMatch = clean.match(/^\*\*(.+?)\*\*$/);
-                if (boldMatch) {
-                  return (
-                    <h4 key={i} className="text-[13px] sm:text-sm font-semibold text-foreground mt-4 mb-0.5">
-                      {boldMatch[1]}
-                    </h4>
-                  );
-                }
-
-                // Numbered item: 1. xxx
-                const numMatch = clean.match(/^(\d+)\.\s+(.+)/);
-                if (numMatch) {
-                  return (
-                    <div key={i} className="flex gap-2 ml-1">
-                      <span className="text-muted-foreground font-medium flex-shrink-0 w-5 text-right">{numMatch[1]}.</span>
-                      <span className="break-words">{numMatch[2].replace(/\*\*(.*?)\*\*/g, '$1')}</span>
-                    </div>
-                  );
-                }
-
-                // Regular paragraph — strip remaining markdown
-                const text = clean.replace(/\*\*(.*?)\*\*/g, '$1').replace(/^#{1,3}\s*/, '');
-                return <p key={i} className="break-words">{text}</p>;
-              })}
+            <div className="text-[13px] sm:text-sm text-foreground/90 leading-relaxed">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  h1: ({children}) => <h3 className="text-base font-semibold text-foreground mt-5 mb-1 pt-3 border-t border-border/30 first:mt-0 first:border-0 first:pt-0">{children}</h3>,
+                  h2: ({children}) => <h3 className="text-base font-semibold text-foreground mt-5 mb-1 pt-3 border-t border-border/30">{children}</h3>,
+                  h3: ({children}) => <h4 className="text-sm font-semibold text-foreground mt-4 mb-1">{children}</h4>,
+                  p: ({children}) => <p className="my-2 break-words leading-relaxed">{children}</p>,
+                  strong: ({children}) => <span className="font-semibold text-foreground">{children}</span>,
+                  ol: ({children}) => <ol className="my-2 ml-5 space-y-1.5 list-decimal">{children}</ol>,
+                  ul: ({children}) => <ul className="my-2 ml-5 space-y-1">{children}</ul>,
+                  li: ({children}) => <li className="break-words">{children}</li>,
+                  a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 underline">{children}</a>,
+                  blockquote: ({children}) => <blockquote className="border-l-2 border-border pl-3 my-2 text-muted-foreground italic">{children}</blockquote>,
+                  hr: () => <hr className="my-3 border-border/30" />,
+                }}
+              >
+                {content}
+              </ReactMarkdown>
             </div>
           )}
 
