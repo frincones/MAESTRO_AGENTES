@@ -16,14 +16,12 @@ export function ChatArea({ messages, isLoading, thinkingSteps = [], onOpenActivi
   const containerRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
 
-  // Auto-scroll when new content arrives (unless user scrolled up)
   useEffect(() => {
     if (!userScrolled) {
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, thinkingSteps, isLoading, userScrolled]);
 
-  // Detect manual scroll up
   const handleScroll = () => {
     const el = containerRef.current;
     if (!el) return;
@@ -41,15 +39,22 @@ export function ChatArea({ messages, isLoading, thinkingSteps = [], onOpenActivi
         onScroll={handleScroll}
       >
         <div className="max-w-3xl mx-auto py-3 sm:py-4 md:py-6 space-y-3 sm:space-y-4">
-          {messages.map((msg) => (
-            <ChatMessage
-              key={msg.id}
-              message={msg}
-              onOpenActivity={onOpenActivity}
-            />
-          ))}
+          {messages.map((msg) => {
+            // Hide the empty assistant placeholder while thinking
+            // (AgentThinking component shows instead)
+            if (msg.role === 'assistant' && !msg.content && isLoading) {
+              return null;
+            }
+            return (
+              <ChatMessage
+                key={msg.id}
+                message={msg}
+                onOpenActivity={onOpenActivity}
+              />
+            );
+          })}
 
-          {/* Agent thinking timeline — replaces old 3-dot animation */}
+          {/* Agent thinking timeline — replaces empty assistant placeholder */}
           {isLoading && (
             <AgentThinking
               steps={thinkingSteps}

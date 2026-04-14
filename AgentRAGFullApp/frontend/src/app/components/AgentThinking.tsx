@@ -29,6 +29,20 @@ function getStepIcon(step: ThinkingStep) {
 export default function AgentThinking({ steps, isThinking, duration, onOpenActivity }: AgentThinkingProps) {
   if (steps.length === 0 && !isThinking) return null;
 
+  // Still loading but no steps yet — show minimal loader
+  if (steps.length === 0 && isThinking) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="py-3 flex items-center gap-2"
+      >
+        <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+        <span className="text-xs text-muted-foreground">Analizando consulta...</span>
+      </motion.div>
+    );
+  }
+
   // If done thinking, show collapsed summary
   if (!isThinking && duration !== undefined) {
     return (
