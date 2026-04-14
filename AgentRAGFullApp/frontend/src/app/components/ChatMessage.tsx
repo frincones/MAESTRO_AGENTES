@@ -67,12 +67,29 @@ export default function ChatMessage({ message, onOpenActivity }: ChatMessageProp
             </div>
           )}
 
-          {/* Message text */}
-          <div className="prose prose-sm max-w-none">
-            <p className="text-xs sm:text-[13px] text-foreground/90 leading-relaxed whitespace-pre-wrap break-words">
-              {content}
-            </p>
-          </div>
+          {/* Message text — renders as clean prose, no raw markdown */}
+          {content && (
+            <div className="text-[13px] sm:text-sm text-foreground/90 leading-relaxed space-y-3">
+              {content.split('\n\n').filter(Boolean).map((paragraph, i) => {
+                const trimmed = paragraph.trim();
+                // Skip markdown headers/artifacts
+                if (trimmed.startsWith('###') || trimmed.startsWith('##') || trimmed.startsWith('---')) return null;
+                // Clean markdown artifacts from text
+                const clean = trimmed
+                  .replace(/^#{1,3}\s*/, '')           // Remove # headers
+                  .replace(/\*\*(.*?)\*\*/g, '$1')     // Remove **bold**
+                  .replace(/^\s*[-*]\s+/gm, '\u2022 ') // Convert - bullets to dot
+                  .replace(/📌|⚖️|🔍|📋|⚠️|📘/g, '')  // Remove decorative emojis
+                  .trim();
+                if (!clean) return null;
+                return (
+                  <p key={i} className="break-words">
+                    {clean}
+                  </p>
+                );
+              })}
+            </div>
+          )}
 
           {/* Actions */}
           {!isUser && content && (

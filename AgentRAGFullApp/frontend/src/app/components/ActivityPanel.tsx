@@ -167,12 +167,52 @@ export default function ActivityPanel({ isOpen, onClose, steps, duration, vigenc
               </div>
             )}
 
+            {/* Download sources */}
+            {sources && sources.length > 0 && (
+              <div>
+                <button onClick={() => toggle('download')} className="flex items-center gap-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 hover:text-foreground transition-colors">
+                  {expandedSections.has('download') ? <ChevronDown className="w-3 h-3"/> : <ChevronRight className="w-3 h-3"/>}
+                  Descargar documentos
+                </button>
+                {expandedSections.has('download') && (
+                  <div className="space-y-1.5 ml-1">
+                    <p className="text-[10px] text-muted-foreground mb-2">
+                      Descargue los documentos usados para validacion manual:
+                    </p>
+                    {sources.filter(s => !s.includes('datos_gov')).map((s, i) => {
+                      // Build download URL based on source name
+                      const isFromFP = s.includes('funcion_publica') || s.includes('Ministerio');
+                      const isFromSenado = s.includes('Codigo') || s.includes('Ley_');
+                      const downloadUrl = isFromFP
+                        ? `https://www.funcionpublica.gov.co/eva/gestornormativo/`
+                        : isFromSenado
+                          ? `http://www.secretariasenado.gov.co/senado/basedoc/`
+                          : '#';
+                      return (
+                        <a
+                          key={i}
+                          href={downloadUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-2 py-1 px-2 rounded text-xs bg-muted/50 hover:bg-muted transition-colors"
+                        >
+                          <Download className="w-3 h-3 text-blue-500 flex-shrink-0" />
+                          <span className="truncate text-foreground/70">{s}</span>
+                          <ExternalLink className="w-2.5 h-2.5 text-muted-foreground ml-auto flex-shrink-0" />
+                        </a>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Duration */}
             {duration !== undefined && (
               <div className="pt-2 border-t border-border">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Clock className="w-3.5 h-3.5" />
-                  <span>Pensó durante {duration}s</span>
+                  <span>Penso durante {duration}s</span>
                   <span className="text-green-500 ml-auto">Listo</span>
                 </div>
               </div>
