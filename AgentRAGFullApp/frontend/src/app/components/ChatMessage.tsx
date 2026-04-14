@@ -67,25 +67,93 @@ export default function ChatMessage({ message, onOpenActivity }: ChatMessageProp
             </div>
           )}
 
-          {/* Message text — renders as clean prose, no raw markdown */}
+          {/* Message text — structured prose rendering */}
           {content && (
-            <div className="text-[13px] sm:text-sm text-foreground/90 leading-relaxed space-y-3">
-              {content.split('\n\n').filter(Boolean).map((paragraph, i) => {
-                const trimmed = paragraph.trim();
-                // Skip markdown headers/artifacts
-                if (trimmed.startsWith('###') || trimmed.startsWith('##') || trimmed.startsWith('---')) return null;
-                // Clean markdown artifacts from text
-                const clean = trimmed
-                  .replace(/^#{1,3}\s*/, '')           // Remove # headers
-                  .replace(/\*\*(.*?)\*\*/g, '$1')     // Remove **bold**
-                  .replace(/^\s*[-*]\s+/gm, '\u2022 ') // Convert - bullets to dot
-                  .replace(/📌|⚖️|🔍|📋|⚠️|📘/g, '')  // Remove decorative emojis
+            <div className="text-[13px] sm:text-sm text-foreground/90 leading-relaxed">
+              {content.split('\n').reduce((acc: string[][], line) => {
+                // Group lines into blocks separated by empty lines
+                if (line.trim() === '') {
+                  acc.push([]);
+                } else {
+                  if (acc.length === 0) acc.push([]);
+                  acc[acc.length - 1].push(line);
+                }
+                return acc;
+              }, [[]]).filter(block => block.length > 0).map((block, i) => {
+                const text = block.join('\n').trim();
+                if (!text || text === '---') return null;
+
+                // Clean emojis and markdown artifacts
+                let clean = text
+                  .replace(/📌|⚖️|🔍|📋|⚠️|📘/g, '')
                   .trim();
-                if (!clean) return null;
+
+                // Detect headers: ### Title or ## Title -> bold subtitle with separator
+                const headerMatch = clean.match(/^#{1,3}\s+(.+)$/m);
+                if (headerMatch) {
+                  const title = headerMatch[1].replace(/\*\*/g, '').trim();
+                  return (
+                    <div key={i} className="mt-5 mb-2 first:mt-0">
+                      <div className="border-t border-border/30 pt-3 mb-1" />
+                      <h3 className="text-sm sm:text-base font-semibold text-foreground">{title}</h3>
+                    </div>
+                  );
+                }
+
+                // Detect bold-only lines: **Something** -> subtitle
+                const boldLineMatch = clean.match(/^\*\*(.+?)\*\*$/);
+                if (boldLineMatch) {
+                  return (
+                    <h4 key={i} className="text-[13px] sm:text-sm font-semibold text-foreground mt-4 mb-1">
+                      {boldLineMatch[1]}
+                    </h4>
+                  );
+                }
+
+                // Clean remaining markdown
+                clean = clean
+                  .replace(/\*\*(.*?)\*\*/g, '$1')
+                  .replace(/^#{1,3}\s*/, '');
+
+                // Detect numbered lists: 1. xxx, 2. xxx
+                if (/^\d+\.\s/.test(clean)) {
+                  const items = clean.split(/\n/).filter(Boolean);
+                  return (
+                    <div key={i} className="my-2 space-y-1.5">
+                      {items.map((item, j) => {
+                        const numMatch = item.match(/^(\d+)\.\s+(.+)/);
+                        if (numMatch) {
+                          return (
+                            <div key={j} className="flex gap-2">
+                              <span className="text-muted-foreground font-medium flex-shrink-0 w-5 text-right">{numMatch[1]}.</span>
+                              <span className="break-words">{numMatch[2]}</span>
+                            </div>
+                          );
+                        }
+                        return <p key={j} className="break-words ml-7">{item}</p>;
+                      })}
+                    </div>
+                  );
+                }
+
+                // Detect bullet lists
+                if (/^[\u2022\-\*]\s/.test(clean)) {
+                  const items = clean.split(/\n/).filter(Boolean);
+                  return (
+                    <div key={i} className="my-2 space-y-1 ml-3">
+                      {items.map((item, j) => (
+                        <div key={j} className="flex gap-2">
+                          <span className="text-muted-foreground flex-shrink-0 mt-1.5 w-1 h-1 rounded-full bg-muted-foreground/50" />
+                          <span className="break-words">{item.replace(/^[\u2022\-\*]\s*/, '')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                }
+
+                // Regular paragraph
                 return (
-                  <p key={i} className="break-words">
-                    {clean}
-                  </p>
+                  <p key={i} className="my-2 break-words">{clean}</p>
                 );
               })}
             </div>

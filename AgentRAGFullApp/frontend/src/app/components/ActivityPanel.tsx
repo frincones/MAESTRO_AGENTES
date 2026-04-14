@@ -167,41 +167,48 @@ export default function ActivityPanel({ isOpen, onClose, steps, duration, vigenc
               </div>
             )}
 
-            {/* Download sources */}
-            {sources && sources.length > 0 && (
+            {/* Download ALL documents — sources + ingested norms */}
+            {((sources && sources.length > 0) || ingestSteps.length > 0) && (
               <div>
                 <button onClick={() => toggle('download')} className="flex items-center gap-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 hover:text-foreground transition-colors">
                   {expandedSections.has('download') ? <ChevronDown className="w-3 h-3"/> : <ChevronRight className="w-3 h-3"/>}
-                  Descargar documentos
+                  Descargar documentos ({(sources?.length || 0) + ingestSteps.length})
                 </button>
                 {expandedSections.has('download') && (
                   <div className="space-y-1.5 ml-1">
                     <p className="text-[10px] text-muted-foreground mb-2">
-                      Descargue los documentos usados para validacion manual:
+                      Documentos usados en el analisis (click para abrir fuente oficial):
                     </p>
-                    {sources.filter(s => !s.includes('datos_gov')).map((s, i) => {
-                      // Build download URL based on source name
-                      const isFromFP = s.includes('funcion_publica') || s.includes('Ministerio');
-                      const isFromSenado = s.includes('Codigo') || s.includes('Ley_');
-                      const downloadUrl = isFromFP
-                        ? `https://www.funcionpublica.gov.co/eva/gestornormativo/`
-                        : isFromSenado
-                          ? `http://www.secretariasenado.gov.co/senado/basedoc/`
-                          : '#';
+                    {/* Ingested norms — downloaded during this query */}
+                    {ingestSteps.map((step, i) => {
+                      const name = step.text;
+                      const parts = name.match(/(\w+)\s+(\d+)\s+de\s+(\d+)/i);
+                      let url = 'https://www.funcionpublica.gov.co/eva/gestornormativo/';
+                      if (parts) {
+                        const tipo = parts[1].toLowerCase();
+                        const num = parts[2];
+                        const anio = parts[3];
+                        url = `http://www.secretariasenado.gov.co/senado/basedoc/${tipo}_${num}_${anio}.html`;
+                      }
                       return (
-                        <a
-                          key={i}
-                          href={downloadUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-2 py-1 px-2 rounded text-xs bg-muted/50 hover:bg-muted transition-colors"
-                        >
+                        <a key={`ingest-${i}`} href={url} target="_blank" rel="noopener noreferrer"
+                           className="flex items-center gap-2 py-1.5 px-2 rounded text-xs bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
                           <Download className="w-3 h-3 text-blue-500 flex-shrink-0" />
-                          <span className="truncate text-foreground/70">{s}</span>
-                          <ExternalLink className="w-2.5 h-2.5 text-muted-foreground ml-auto flex-shrink-0" />
+                          <span className="truncate text-blue-700 dark:text-blue-400 font-medium">{name}</span>
+                          <ExternalLink className="w-2.5 h-2.5 text-blue-400 ml-auto flex-shrink-0" />
                         </a>
                       );
                     })}
+                    {/* Source documents from RAG */}
+                    {sources?.map((s, i) => (
+                      <a key={`src-${i}`}
+                         href={s.includes('funcionpublica') ? s : `http://www.secretariasenado.gov.co/senado/basedoc/`}
+                         target="_blank" rel="noopener noreferrer"
+                         className="flex items-center gap-2 py-1 px-2 rounded text-xs bg-muted/50 hover:bg-muted transition-colors">
+                        <ExternalLink className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                        <span className="truncate text-foreground/70">{s}</span>
+                      </a>
+                    ))}
                   </div>
                 )}
               </div>
