@@ -436,30 +436,106 @@ class RAGAgent:
             if vigencia_results:
                 yield "[STATUS] Verificando vigencia de normas...\n"
 
-            # Phase 5.5: Search jurisprudence
+            # Phase 5.5: Search + download + ingest jurisprudence
             yield "[STATUS] Buscando jurisprudencia relevante...\n"
+            juris_context = ""
+            juris_for_frontend = []
             try:
-                from api.legal import _source_router
+                from api.legal import _source_router, _derogation_graph, _storage
+
                 if _source_router:
                     juris_query = retrieval_query
                     if case_state.areas_involved:
                         juris_query = f"{' '.join(case_state.areas_involved)} {message}"
+
+                    # Search sentencias in datos.gov.co + Corte Constitucional
                     juris_results = await _source_router.search_sentencias(
                         query=juris_query, limit=5,
                     )
+
                     if juris_results:
-                        yield f"[STATUS] {len(juris_results)} sentencias encontradas\n"
-                        # Add to context
-                        juris_block = "\n\nJURISPRUDENCIA RELEVANTE ENCONTRADA:\n"
+                        yield f"[STATUS] {len(juris_results)} sentencias encontradas, descargando...\n"
+
+                        # Download full text and ingest each sentencia
+                        juris_context = "\n\nJURISPRUDENCIA RELEVANTE:\n"
                         for jr in juris_results[:3]:
-                            juris_block += f"- {getattr(jr, 'titulo', '')} ({getattr(jr, 'source', '')})\n"
-                            preview = getattr(jr, 'preview', '')
+                            titulo = getattr(jr, 'titulo', '') or ''
+                            source = getattr(jr, 'source', '') or ''
+                            url = getattr(jr, 'url', '') or ''
+                            preview = getattr(jr, 'preview', '') or ''
+                            metadata = getattr(jr, 'metadata', {}) or {}
+
+                            juris_context += f"\n--- {titulo} ({source}) ---\n"
                             if preview:
-                                juris_block += f"  {preview[:150]}\n"
-                        # Will be added to context in Phase 6
+                                juris_context += f"{preview}\n"
+
+                            # Try to download full sentencia text
+                            if url and 'corte_cc' in source:
+                                try:
+                                    from legal_sources.corte_constitucional import CorteConstitucionalSource
+                                    cc = CorteConstitucionalSource()
+                                    # Parse tipo/numero/anio from titulo
+                                    import re
+                                    m = re.match(r'Sentencia\s+(\w+)-(\d+).*?(\d{4})', titulo)
+                                    if m:
+                                        sent_data = await cc.fetch_sentencia(m.group(1), int(m.group(2)), int(m.group(3)))
+                                        if sent_data and sent_data.get('texto_completo'):
+                                            texto = sent_data['texto_completo'][:3000]
+                                            juris_context += f"Texto: {texto}\n"
+                                            yield f"[INGEST] Sentencia {titulo}\n"
+
+                                            # Save to jurisprudencia table
+                                            if _derogation_graph:
+                                                from derogation.models import JurisprudenciaCreate, Corte, FuenteLegal
+                                                jc = JurisprudenciaCreate(
+                                                    corte=Corte.CORTE_CONSTITUCIONAL,
+                                                    tipo_sentencia=m.group(1) if m else None,
+                                                    numero=titulo,
+                                                    fecha=None,
+                                                    magistrado=metadata.get('magistrado'),
+                                                    fuente_url=url,
+                                                    fuente=FuenteLegal.CORTE_CC,
+                                                    texto_completo=texto[:5000],
+                                                    decision=preview[:500],
+                                                )
+                                                await _derogation_graph.insert_jurisprudencia(jc)
+
+                                            # Ingest as RAG chunks
+                                            if _storage:
+                                                from ingestion.pipeline import IngestionPipeline
+                                                from config.schema import load_config
+                                                config = load_config()
+                                                pipeline = IngestionPipeline(config, _storage)
+                                                await pipeline.ingest_text(
+                                                    text=texto,
+                                                    title=f"Sentencia {titulo}",
+                                                    source=url or source,
+                                                    doc_type="jurisprudencia",
+                                                )
+                                    await cc.close()
+                                except Exception as e:
+                                    logger.debug(f"Sentencia download failed: {e}")
+
+                            # Collect for frontend
+                            juris_for_frontend.append({
+                                "titulo": titulo, "source": source,
+                                "url": url, "preview": preview[:200],
+                                "magistrado": metadata.get('magistrado', ''),
+                            })
+
+                        # Re-run retrieval if we ingested sentencias
+                        if any("[INGEST]" in str(j) for j in juris_for_frontend):
+                            self.invalidate_doc_cache()
+                            yield "[STATUS] Re-buscando con jurisprudencia indexada...\n"
+                            retrieval_result = await self.retrieval.retrieve(
+                                query=retrieval_query, session_id=session_id,
+                            )
+                            retrieval_result.query.original_query = message
+
             except Exception as e:
-                logger.debug(f"Jurisprudence search failed: {e}")
-                juris_results = []
+                logger.warning(f"Jurisprudence pipeline failed: {e}")
+                juris_context = ""
+                juris_for_frontend = []
 
         # Phase 6: Build context & messages
         sources = get_sources(retrieval_result)
@@ -475,6 +551,10 @@ class RAGAgent:
                         sources.append(name)
         else:
             context = build_context(retrieval_result)
+
+        # Append jurisprudencia context
+        if juris_context:
+            context += juris_context
 
         loaded_doc_titles = await self._get_loaded_doc_titles()
 
@@ -551,8 +631,13 @@ class RAGAgent:
                         vdata["derogada_por"] = f"{d.get('norma_tipo','')} {d.get('norma_numero','')} de {d.get('norma_anio','')}"
                     yield f"\n[VIGENCIA] {json.dumps(vdata, ensure_ascii=False)}\n"
 
-        # Sources with URLs for sidebar
+        # Jurisprudencia for sidebar
         import json
+        if juris_for_frontend:
+            for jf in juris_for_frontend:
+                yield f"\n[JURISPRUDENCIA] {json.dumps(jf, ensure_ascii=False)}\n"
+
+        # Sources with URLs for sidebar
         if sources:
             yield f"\n[SOURCES] {json.dumps(sources, ensure_ascii=False)}\n"
 
@@ -1093,7 +1178,9 @@ class RAGAgent:
                         f"Ya estan cargados: {loaded_str}. "
                         "NO repitas normas ya cargadas. "
                         "Responde SOLO con formato: TIPO NUMERO AÑO (una por linea). "
-                        "Ejemplo: LEY 675 2001\nDECRETO 1072 2015\nLEY 599 2000\n"
+                        "Para normas: LEY 675 2001\nDECRETO 1072 2015\n"
+                        "Para sentencias de la Corte Constitucional: SENTENCIA T-388 2019\nSENTENCIA SU-049 2017\n"
+                        "Incluye sentencias relevantes siempre que sea posible. "
                         "Si no se necesitan normas adicionales, responde: NONE"
                     )},
                     {"role": "user", "content": message},
