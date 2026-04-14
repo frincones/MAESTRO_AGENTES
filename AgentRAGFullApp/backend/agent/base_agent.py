@@ -509,10 +509,53 @@ class RAGAgent:
                         vdata["derogada_por"] = f"{d.get('norma_tipo','')} {d.get('norma_numero','')} de {d.get('norma_anio','')}"
                     yield f"\n[VIGENCIA] {json.dumps(vdata, ensure_ascii=False)}\n"
 
-        # Sources
+        # Sources with URLs for sidebar
+        import json
         if sources:
-            import json
             yield f"\n[SOURCES] {json.dumps(sources, ensure_ascii=False)}\n"
+
+        # Emit source references with real URLs for the activity panel
+        source_refs = []
+        # From live search results
+        if live_results:
+            for lr in live_results:
+                url = getattr(lr, 'url', None)
+                titulo = getattr(lr, 'titulo', '') or ''
+                source_name = getattr(lr, 'source', '') or ''
+                preview = getattr(lr, 'preview', '') or ''
+                if url or titulo:
+                    ref = {"url": url or '', "title": titulo, "source": source_name, "preview": preview[:120]}
+                    source_refs.append(ref)
+        # From ingested norms (they have fuente_url in the graph)
+        try:
+            from api.legal import _derogation_graph
+            if _derogation_graph:
+                all_normas = await _derogation_graph.list_normas(limit=30)
+                for n in all_normas:
+                    if n.get('fuente_url'):
+                        nombre = f"{n.get('tipo','')} {n.get('numero','')} de {n.get('anio','')}"
+                        ref = {"url": n['fuente_url'], "title": nombre,
+                               "source": "Fuente oficial", "preview": n.get('titulo', '')[:120]}
+                        # Avoid duplicates
+                        if not any(r['url'] == ref['url'] for r in source_refs):
+                            source_refs.append(ref)
+        except Exception:
+            pass
+        # From loaded documents
+        for s in sources:
+            if 'senado' in s.lower() or 'codigo' in s.lower() or 'ley_' in s.lower():
+                ref = {"url": "http://www.secretariasenado.gov.co/senado/basedoc/",
+                       "title": s, "source": "secretariasenado.gov.co", "preview": "Texto oficial del Senado de la Republica"}
+                if not any(r['title'] == ref['title'] for r in source_refs):
+                    source_refs.append(ref)
+            elif 'funcionpublica' in s.lower():
+                ref = {"url": "https://www.funcionpublica.gov.co/eva/gestornormativo/",
+                       "title": s, "source": "funcionpublica.gov.co", "preview": "Gestor Normativo de Funcion Publica"}
+                if not any(r['title'] == ref['title'] for r in source_refs):
+                    source_refs.append(ref)
+
+        if source_refs:
+            yield f"\n[SOURCEREFS] {json.dumps(source_refs, ensure_ascii=False)}\n"
 
         # Duration
         duration = int(time.time() - start_time)

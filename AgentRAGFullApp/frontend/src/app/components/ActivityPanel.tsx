@@ -14,6 +14,13 @@ export interface VigenciaItem {
   derogada_por?: string;
 }
 
+export interface SourceRef {
+  url: string;
+  title: string;
+  source: string;
+  preview: string;
+}
+
 interface ActivityPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -21,6 +28,7 @@ interface ActivityPanelProps {
   duration?: number;
   vigencia?: VigenciaItem[];
   sources?: string[];
+  sourceRefs?: SourceRef[];
 }
 
 function getStepIcon(step: ThinkingStep) {
@@ -32,7 +40,7 @@ function getStepIcon(step: ThinkingStep) {
   return <Check className="w-3.5 h-3.5 text-green-500" />;
 }
 
-export default function ActivityPanel({ isOpen, onClose, steps, duration, vigencia, sources }: ActivityPanelProps) {
+export default function ActivityPanel({ isOpen, onClose, steps, duration, vigencia, sources, sourceRefs }: ActivityPanelProps) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['steps', 'vigencia']));
 
   if (!isOpen) return null;
@@ -147,8 +155,56 @@ export default function ActivityPanel({ isOpen, onClose, steps, duration, vigenc
               </div>
             )}
 
-            {/* Sources */}
-            {sources && sources.length > 0 && (
+            {/* Sources — Copilot-style cards with URL, title, preview */}
+            {sourceRefs && sourceRefs.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-semibold text-foreground">Fuentes</span>
+                  <span className="text-[10px] text-muted-foreground">{sourceRefs.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {sourceRefs.map((ref, i) => {
+                    const domain = ref.url ? new URL(ref.url).hostname.replace('www.', '') : ref.source || '';
+                    return (
+                      <a
+                        key={i}
+                        href={ref.url || '#'}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block p-2.5 rounded-lg border border-border/50 hover:border-border hover:bg-muted/30 transition-all group"
+                      >
+                        <div className="flex items-start gap-2">
+                          {/* Domain icon */}
+                          <div className="flex-shrink-0 w-5 h-5 rounded bg-muted flex items-center justify-center mt-0.5">
+                            <span className="text-[8px] font-bold text-muted-foreground uppercase">
+                              {domain.slice(0, 2)}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            {/* Domain */}
+                            <div className="text-[10px] text-muted-foreground truncate">{domain}</div>
+                            {/* Title */}
+                            <div className="text-xs font-medium text-foreground leading-tight mt-0.5 line-clamp-2">
+                              {ref.title}
+                            </div>
+                            {/* Preview */}
+                            {ref.preview && (
+                              <div className="text-[10px] text-muted-foreground/70 leading-tight mt-1 line-clamp-2">
+                                {ref.preview}
+                              </div>
+                            )}
+                          </div>
+                          <ExternalLink className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground flex-shrink-0 mt-1" />
+                        </div>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Fallback: simple source list when no sourceRefs */}
+            {(!sourceRefs || sourceRefs.length === 0) && sources && sources.length > 0 && (
               <div>
                 <button onClick={() => toggle('sources')} className="flex items-center gap-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 hover:text-foreground transition-colors">
                   {expandedSections.has('sources') ? <ChevronDown className="w-3 h-3"/> : <ChevronRight className="w-3 h-3"/>}
@@ -161,53 +217,6 @@ export default function ActivityPanel({ isOpen, onClose, steps, duration, vigenc
                         <ExternalLink className="w-3 h-3 text-muted-foreground flex-shrink-0" />
                         <span className="text-xs text-foreground/70 truncate">{s}</span>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Download ALL documents — sources + ingested norms */}
-            {((sources && sources.length > 0) || ingestSteps.length > 0) && (
-              <div>
-                <button onClick={() => toggle('download')} className="flex items-center gap-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 hover:text-foreground transition-colors">
-                  {expandedSections.has('download') ? <ChevronDown className="w-3 h-3"/> : <ChevronRight className="w-3 h-3"/>}
-                  Descargar documentos ({(sources?.length || 0) + ingestSteps.length})
-                </button>
-                {expandedSections.has('download') && (
-                  <div className="space-y-1.5 ml-1">
-                    <p className="text-[10px] text-muted-foreground mb-2">
-                      Documentos usados en el analisis (click para abrir fuente oficial):
-                    </p>
-                    {/* Ingested norms — downloaded during this query */}
-                    {ingestSteps.map((step, i) => {
-                      const name = step.text;
-                      const parts = name.match(/(\w+)\s+(\d+)\s+de\s+(\d+)/i);
-                      let url = 'https://www.funcionpublica.gov.co/eva/gestornormativo/';
-                      if (parts) {
-                        const tipo = parts[1].toLowerCase();
-                        const num = parts[2];
-                        const anio = parts[3];
-                        url = `http://www.secretariasenado.gov.co/senado/basedoc/${tipo}_${num}_${anio}.html`;
-                      }
-                      return (
-                        <a key={`ingest-${i}`} href={url} target="_blank" rel="noopener noreferrer"
-                           className="flex items-center gap-2 py-1.5 px-2 rounded text-xs bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
-                          <Download className="w-3 h-3 text-blue-500 flex-shrink-0" />
-                          <span className="truncate text-blue-700 dark:text-blue-400 font-medium">{name}</span>
-                          <ExternalLink className="w-2.5 h-2.5 text-blue-400 ml-auto flex-shrink-0" />
-                        </a>
-                      );
-                    })}
-                    {/* Source documents from RAG */}
-                    {sources?.map((s, i) => (
-                      <a key={`src-${i}`}
-                         href={s.includes('funcionpublica') ? s : `http://www.secretariasenado.gov.co/senado/basedoc/`}
-                         target="_blank" rel="noopener noreferrer"
-                         className="flex items-center gap-2 py-1 px-2 rounded text-xs bg-muted/50 hover:bg-muted transition-colors">
-                        <ExternalLink className="w-3 h-3 text-muted-foreground flex-shrink-0" />
-                        <span className="truncate text-foreground/70">{s}</span>
-                      </a>
                     ))}
                   </div>
                 )}

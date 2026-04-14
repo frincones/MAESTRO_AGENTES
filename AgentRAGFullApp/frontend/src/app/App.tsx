@@ -6,7 +6,7 @@ import { MessageInput } from './components/MessageInput';
 import { SettingsPanel } from './components/SettingsPanel';
 import { KnowledgePanel } from './components/KnowledgePanel';
 import ActivityPanel from './components/ActivityPanel';
-import type { VigenciaItem } from './components/ActivityPanel';
+import type { VigenciaItem, SourceRef } from './components/ActivityPanel';
 import type { ThinkingStep } from './components/AgentThinking';
 import { Toaster } from './components/ui/sonner';
 import { toast } from 'sonner';
@@ -28,6 +28,7 @@ export interface Message {
   thinkingSteps?: ThinkingStep[];
   thinkingDuration?: number;
   vigencia?: VigenciaItem[];
+  sourceRefs?: SourceRef[];
 }
 
 function fmtTime(d: Date = new Date()): string {
@@ -101,6 +102,7 @@ export default function App() {
         const collectedSteps: ThinkingStep[] = [];
         const collectedVigencia: VigenciaItem[] = [];
         const collectedSources: string[] = [];
+        const collectedSourceRefs: SourceRef[] = [];
         let duration: number | undefined;
         let buffer = '';
 
@@ -161,6 +163,13 @@ export default function App() {
                 collectedSources.push(...arr);
               } catch { /* ignore */ }
 
+            } else if (trimmed.startsWith('[SOURCEREFS] ')) {
+              try {
+                const json = trimmed.replace('[SOURCEREFS] ', '');
+                const refs = JSON.parse(json) as SourceRef[];
+                collectedSourceRefs.push(...refs);
+              } catch { /* ignore */ }
+
             } else if (trimmed.startsWith('[DURATION] ')) {
               duration = parseInt(trimmed.replace('[DURATION] ', ''), 10);
 
@@ -178,6 +187,7 @@ export default function App() {
               thinkingDuration: duration,
               vigencia: collectedVigencia.length > 0 ? [...collectedVigencia] : undefined,
               sources: collectedSources.length > 0 ? [...collectedSources] : undefined,
+              sourceRefs: collectedSourceRefs.length > 0 ? [...collectedSourceRefs] : undefined,
             } : m
           ));
         }
@@ -339,6 +349,7 @@ export default function App() {
         duration={activityMessage?.thinkingDuration}
         vigencia={activityMessage?.vigencia}
         sources={activityMessage?.sources}
+        sourceRefs={activityMessage?.sourceRefs}
       />
 
       <Toaster position="top-center" />
