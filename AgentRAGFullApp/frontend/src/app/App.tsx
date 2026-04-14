@@ -106,107 +106,60 @@ export default function App() {
         const collectedSources: string[] = [];
         const collectedSourceRefs: SourceRef[] = [];
         let duration: number | undefined;
-        let buffer = '';
+
+        const processLine = (line: string) => {
+          const t = line.trim();
+          if (!t) return;
+
+          if (t.startsWith('[STATUS] ')) {
+            if (collectedSteps.length > 0) collectedSteps[collectedSteps.length - 1].status = 'completed';
+            collectedSteps.push({ id: `s-${stepCounter++}`, text: t.slice(9), status: 'active', type: 'status', timestamp: Date.now() });
+            setThinkingSteps([...collectedSteps]);
+          } else if (t.startsWith('[INGEST] ')) {
+            collectedSteps.push({ id: `i-${stepCounter++}`, text: t.slice(9), status: 'completed', type: 'ingest', timestamp: Date.now() });
+            setThinkingSteps([...collectedSteps]);
+          } else if (t.startsWith('[CONTENT]')) {
+            contentStarted = true;
+            collectedSteps.forEach(s => s.status = 'completed');
+            setThinkingSteps([...collectedSteps]);
+            const text = t.slice(9);
+            if (text) acc += text;
+          } else if (t.startsWith('[VIGENCIA] ')) {
+            try { collectedVigencia.push(JSON.parse(t.slice(11))); } catch {}
+          } else if (t.startsWith('[SOURCES] ')) {
+            try { collectedSources.push(...JSON.parse(t.slice(10))); } catch {}
+          } else if (t.startsWith('[SOURCEREFS] ')) {
+            try { collectedSourceRefs.push(...JSON.parse(t.slice(13))); } catch {}
+          } else if (t.startsWith('[CASESTATE] ')) {
+            try { setCaseState(JSON.parse(t.slice(12))); } catch {}
+          } else if (t.startsWith('[DURATION] ')) {
+            duration = parseInt(t.slice(11), 10);
+          } else if (!t.startsWith('[')) {
+            // Plain text — content (either after [CONTENT] or chitchat without protocol)
+            contentStarted = true;
+            acc += t + '\n';
+          }
+        };
+
+        let pending = '';
 
         for await (const rawChunk of sendChatStream({
           message: content, session_id: sessionId, stream: true,
         })) {
           if (aborted) break;
 
-          // Buffer chunks — they may arrive split mid-line
-          buffer += rawChunk;
+          pending += rawChunk;
 
-          // If buffer has no newlines and doesn't start with [, it's direct content (chitchat)
-          if (!buffer.includes('\n') && !buffer.startsWith('[')) {
-            acc = buffer;
-            contentStarted = true;
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, content: acc } : m
-            ));
-            continue;
-          }
-
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trimEnd();
-
-            if (trimmed.startsWith('[STATUS] ')) {
-              const text = trimmed.replace('[STATUS] ', '');
-              // Mark previous active step as completed
-              if (collectedSteps.length > 0) {
-                collectedSteps[collectedSteps.length - 1].status = 'completed';
-              }
-              const step: ThinkingStep = {
-                id: `s-${stepCounter++}`, text, status: 'active',
-                type: 'status', timestamp: Date.now(),
-              };
-              collectedSteps.push(step);
-              setThinkingSteps([...collectedSteps]);
-
-            } else if (trimmed.startsWith('[INGEST] ')) {
-              const normName = trimmed.replace('[INGEST] ', '');
-              const step: ThinkingStep = {
-                id: `i-${stepCounter++}`, text: normName, status: 'completed',
-                type: 'ingest', timestamp: Date.now(),
-              };
-              collectedSteps.push(step);
-              setThinkingSteps([...collectedSteps]);
-
-            } else if (trimmed.startsWith('[CONTENT]')) {
-              // First real content token — mark all steps completed
-              contentStarted = true;
-              collectedSteps.forEach(s => s.status = 'completed');
-              setThinkingSteps([...collectedSteps]);
-              const text = trimmed.replace('[CONTENT]', '');
-              if (text) acc += text;
-
-            } else if (trimmed.startsWith('[VIGENCIA] ')) {
-              try {
-                const json = trimmed.replace('[VIGENCIA] ', '');
-                const v = JSON.parse(json) as VigenciaItem;
-                collectedVigencia.push(v);
-              } catch { /* ignore parse errors */ }
-
-            } else if (trimmed.startsWith('[SOURCES] ')) {
-              try {
-                const json = trimmed.replace('[SOURCES] ', '');
-                const arr = JSON.parse(json) as string[];
-                collectedSources.push(...arr);
-              } catch { /* ignore */ }
-
-            } else if (trimmed.startsWith('[SOURCEREFS] ')) {
-              try {
-                const json = trimmed.replace('[SOURCEREFS] ', '');
-                const refs = JSON.parse(json) as SourceRef[];
-                collectedSourceRefs.push(...refs);
-              } catch { /* ignore */ }
-
-            } else if (trimmed.startsWith('[CASESTATE] ')) {
-              // Case state update — for session stats
-              try {
-                const json = trimmed.replace('[CASESTATE] ', '');
-                const cs = JSON.parse(json);
-                setCaseState(cs);
-              } catch { /* ignore */ }
-
-            } else if (trimmed.startsWith('[DURATION] ')) {
-              duration = parseInt(trimmed.replace('[DURATION] ', ''), 10);
-
-            } else if (trimmed) {
-              // Regular text — either after [CONTENT] or chitchat (no protocol)
-              if (!contentStarted && !trimmed.startsWith('[')) {
-                // Chitchat or plain text — no protocol prefix, treat as content
-                contentStarted = true;
-              }
-              if (contentStarted) {
-                acc += trimmed + '\n';
-              }
+          // Process complete lines
+          if (pending.includes('\n')) {
+            const parts = pending.split('\n');
+            pending = parts.pop() || '';
+            for (const part of parts) {
+              processLine(part);
             }
           }
 
-          // Update message content in real-time
+          // Update UI
           setMessages(prev => prev.map(m =>
             m.id === assistantId ? {
               ...m, content: acc,
@@ -219,12 +172,9 @@ export default function App() {
           ));
         }
 
-        // Process remaining buffer (handles chitchat without newlines)
-        if (buffer.trim()) {
-          const remaining = buffer.trim();
-          if (!remaining.startsWith('[')) {
-            acc += remaining;
-          }
+        // Process any remaining pending text
+        if (pending.trim()) {
+          processLine(pending);
         }
 
         // Final update
