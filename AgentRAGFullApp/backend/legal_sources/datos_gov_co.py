@@ -50,21 +50,33 @@ class DatosGovCoSource(BaseLegalSource):
     # --- SUIN-Juriscol: Normas ---
 
     async def search(self, query: str, limit: int = 10, **kwargs) -> list[LiveSourceResult]:
-        """Busca normas en SUIN-Juriscol via Socrata API."""
+        """Busca normas en SUIN-Juriscol via Socrata API.
+        Note: dataset fields use n_mero (not numero) and a_o (not ano).
+        """
         tipo_filter = kwargs.get("tipo")
         anio_filter = kwargs.get("anio")
 
-        params = {
-            "$q": query,
-            "$limit": str(limit),
-        }
-
-        # Build WHERE clause
+        # Build WHERE clause with free-text search on materia field
         where_parts = []
         if tipo_filter:
             where_parts.append(f"tipo='{tipo_filter.upper()}'")
         if anio_filter:
-            where_parts.append(f"ano='{anio_filter}'")
+            where_parts.append(f"a_o='{anio_filter}'")
+
+        # Free text search: search in materia and subtipo fields
+        search_terms = query.strip().split()
+        # Extract keywords (skip common words)
+        skip = {"de", "del", "la", "el", "los", "las", "que", "en", "por", "para", "con", "una", "un", "se", "al"}
+        keywords = [w for w in search_terms if w.lower() not in skip and len(w) > 2]
+
+        if keywords and not tipo_filter:
+            # Search in materia field which has topic descriptions
+            kw_conditions = []
+            for kw in keywords[:3]:
+                kw_conditions.append(f"upper(materia) like '%{kw.upper()}%'")
+            where_parts.append(f"({' OR '.join(kw_conditions)})")
+
+        params = {"$limit": str(limit)}
         if where_parts:
             params["$where"] = " AND ".join(where_parts)
 
@@ -77,15 +89,17 @@ class DatosGovCoSource(BaseLegalSource):
 
             results = []
             for item in data:
+                numero_str = item.get("n_mero", "") or item.get("numero", "")
+                anio_str = item.get("a_o", "") or item.get("ano", "")
                 results.append(LiveSourceResult(
                     source="datos_gov_suin",
                     tipo=item.get("tipo", ""),
-                    numero=int(item["numero"]) if item.get("numero", "").isdigit() else None,
-                    anio=int(item["ano"]) if item.get("ano", "").isdigit() else None,
+                    numero=int(numero_str) if numero_str.isdigit() else None,
+                    anio=int(anio_str) if anio_str.isdigit() else None,
                     titulo=item.get("subtipo", ""),
                     estado=item.get("vigencia", ""),
                     url=None,
-                    preview=f"{item.get('tipo', '')} {item.get('numero', '')} de {item.get('ano', '')} - {item.get('subtipo', '')}",
+                    preview=f"{item.get('tipo', '')} {numero_str} de {anio_str} - {item.get('subtipo', '')}",
                     metadata={
                         "sector": item.get("sector", ""),
                         "entidad": item.get("entidad", ""),
@@ -104,7 +118,7 @@ class DatosGovCoSource(BaseLegalSource):
     async def search_norma(self, tipo: str, numero: int, anio: int) -> list[dict]:
         """Busca una norma específica por tipo, número y año."""
         params = {
-            "$where": f"tipo='{tipo.upper()}' AND numero='{numero}' AND ano='{anio}'",
+            "$where": f"tipo='{tipo.upper()}' AND n_mero='{numero}' AND a_o='{anio}'",
             "$limit": "5",
         }
 

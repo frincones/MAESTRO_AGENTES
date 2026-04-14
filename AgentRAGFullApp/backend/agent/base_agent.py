@@ -101,15 +101,37 @@ class RAGAgent:
             else "knowledge"
         )
 
-        # Legal mode: search live sources and verify vigencia in parallel
+        # Legal mode: search live sources, auto-ingest missing norms, verify vigencia
         live_results = None
         vigencia_results = None
         is_legal = self._is_legal_mode()
+        did_ingest = False
 
         if is_legal and intent != "conversation":
+            # Phase 1: Search live sources + check vigencia
             live_results, vigencia_results = await self._enrich_with_legal_sources(
                 retrieval_query, retrieval_result
             )
+
+            # Phase 2: Auto-ingest any norms found in live sources that aren't in RAG
+            if live_results:
+                did_ingest = await self._auto_ingest_live_results(live_results)
+
+            # Phase 3: If we ingested something, RE-RUN retrieval to pick up new chunks
+            if did_ingest:
+                self.invalidate_doc_cache()
+                retrieval_result = await self.retrieval.retrieve(
+                    query=retrieval_query,
+                    session_id=session_id,
+                )
+                retrieval_result.query.original_query = message
+                sources = get_sources(retrieval_result)
+                confidence = get_confidence(retrieval_result)
+                # Re-check vigencia with new retrieval results
+                _, vigencia_results = await self._enrich_with_legal_sources(
+                    retrieval_query, retrieval_result
+                )
+                logger.info("Re-ran retrieval after auto-ingest, new sources: %s", sources)
 
         # Build context: legal mode uses enriched context with live sources + vigencia
         if is_legal and (live_results or vigencia_results):
@@ -831,6 +853,113 @@ class RAGAgent:
                 logger.error(f"Auto-ingest replacement failed for {replacement_nombre}: {e}")
 
         return ingested
+
+    async def _auto_ingest_live_results(self, live_results: list) -> bool:
+        """Auto-ingest norms found in live sources that aren't already in the RAG.
+        Returns True if anything was ingested."""
+        try:
+            from api.legal import _source_router, _derogation_graph, _storage, _embedder
+        except ImportError:
+            return False
+
+        if not _source_router or not _storage:
+            return False
+
+        loaded_titles = await self._get_loaded_doc_titles()
+        loaded_lower = {t.lower() for t in loaded_titles}
+        ingested_any = False
+
+        for lr in live_results:
+            tipo = getattr(lr, 'tipo', None)
+            numero = getattr(lr, 'numero', None)
+            anio = getattr(lr, 'anio', None)
+
+            if not tipo or not numero or not anio:
+                continue
+
+            nombre = f"{tipo} {numero} de {anio}"
+            # Check if already loaded
+            already = any(
+                str(numero) in t and str(anio) in t
+                for t in loaded_lower
+            )
+            if already:
+                continue
+
+            logger.info(f"Auto-ingesting from live results: {nombre}")
+            try:
+                norm_data = await _source_router.fetch_norm(tipo, int(numero), int(anio))
+                if not norm_data or not norm_data.get("texto_completo"):
+                    continue
+
+                # Ingest to graph
+                if _derogation_graph:
+                    from derogation.models import NormaCreate, TipoNorma, FuenteLegal
+                    from derogation.detector import detect_derogations
+                    from derogation.models import DerogacionCreate
+
+                    try:
+                        norma_tipo = TipoNorma(tipo.upper())
+                    except ValueError:
+                        norma_tipo = TipoNorma.LEY
+
+                    norma_create = NormaCreate(
+                        tipo=norma_tipo, numero=int(numero), anio=int(anio),
+                        titulo=norm_data.get("titulo", nombre),
+                        fuente=FuenteLegal(norm_data.get("fuente", "manual")) if norm_data.get("fuente") in [e.value for e in FuenteLegal] else FuenteLegal.MANUAL,
+                        fuente_url=norm_data.get("fuente_url"),
+                        texto_completo=norm_data.get("texto_completo"),
+                        metadata=norm_data.get("metadata", {}),
+                    )
+
+                    embedding = None
+                    if _embedder:
+                        embed_text = f"{norm_data.get('titulo', '')} {norm_data.get('texto_completo', '')[:1000]}"
+                        embeddings = await _embedder.generate_embeddings_batch([embed_text])
+                        embedding = embeddings[0] if embeddings else None
+
+                    await _derogation_graph.insert_norma(norma_create, embedding=embedding)
+
+                    # Detect derogations
+                    derogations = detect_derogations(norm_data.get("texto_completo", ""))
+                    for det in derogations:
+                        if det.norma_afectada_numero and det.norma_afectada_anio:
+                            affected = await _derogation_graph.get_norma(
+                                det.norma_afectada_tipo or tipo,
+                                det.norma_afectada_numero, det.norma_afectada_anio,
+                            )
+                            if affected:
+                                origin = await _derogation_graph.get_norma(tipo, int(numero), int(anio))
+                                if origin:
+                                    derog = DerogacionCreate(
+                                        norma_origen_id=str(origin["id"]),
+                                        norma_destino_id=str(affected["id"]),
+                                        tipo=det.tipo_derogacion,
+                                        articulos_afectados=det.articulos_afectados,
+                                        fuente_texto=det.texto_fuente,
+                                        detectado_por="auto_regex",
+                                        confianza=det.confianza,
+                                    )
+                                    await _derogation_graph.insert_derogacion(derog)
+
+                # Ingest to RAG
+                from ingestion.pipeline import IngestionPipeline
+                from config.schema import load_config
+                config = load_config()
+                pipeline = IngestionPipeline(config, _storage)
+                await pipeline.ingest_text(
+                    text=norm_data.get("texto_completo", ""),
+                    title=norm_data.get("titulo", nombre),
+                    source=norm_data.get("fuente_url", "legal_source"),
+                    doc_type="legal_norm",
+                )
+                ingested_any = True
+                logger.info(f"Auto-ingested from live: {nombre}")
+
+            except Exception as e:
+                logger.error(f"Auto-ingest live failed for {nombre}: {e}")
+
+        return ingested_any
 
     def _is_legal_mode(self) -> bool:
         """Check if the agent is configured for legal mode."""
