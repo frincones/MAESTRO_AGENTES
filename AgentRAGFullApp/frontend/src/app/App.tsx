@@ -115,6 +115,17 @@ export default function App() {
 
           // Buffer chunks — they may arrive split mid-line
           buffer += rawChunk;
+
+          // If buffer has no newlines and doesn't start with [, it's direct content (chitchat)
+          if (!buffer.includes('\n') && !buffer.startsWith('[')) {
+            acc = buffer;
+            contentStarted = true;
+            setMessages(prev => prev.map(m =>
+              m.id === assistantId ? { ...m, content: acc } : m
+            ));
+            continue;
+          }
+
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
 
@@ -208,9 +219,12 @@ export default function App() {
           ));
         }
 
-        // Process remaining buffer
-        if (buffer.trim() && contentStarted) {
-          acc += buffer;
+        // Process remaining buffer (handles chitchat without newlines)
+        if (buffer.trim()) {
+          const remaining = buffer.trim();
+          if (!remaining.startsWith('[')) {
+            acc += remaining;
+          }
         }
 
         // Final update
